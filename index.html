@@ -492,22 +492,36 @@ async function doRegister(){
   const cleanUname = uname.toLowerCase().replace(/[^a-z0-9_.]/g,'');
   if(cleanUname.length<3){ toast('اسم مستخدم غير صالح'); return; }
   const btn = $('#btnRegister'); btn.disabled=true; btn.textContent='جارِ الإنشاء...';
-  let reserved = false;
+  let cred = null, claimed = false;
   try{
-    // حجز اسم المستخدم بشكل ذرّي (transaction) بدل قراءة-ثم-كتابة، عشان نمنع
-    // احتمال (نادر لكن حقيقي) إن اتنين يسجلوا بنفس اليوزرنيم في نفس اللحظة بالظبط
-    const txResult = await db.ref('usernames/'+cleanUname).transaction(cur => cur===null ? 'RESERVED' : undefined);
-    if(!txResult.committed){ toast('اسم المستخدم مستخدم بالفعل'); return; }
-    reserved = true;
-    const cred = await auth.createUserWithEmailAndPassword(usernameToEmail(cleanUname), pass);
+    // فحص سريع (قراءة عامة مسموحة للكل حتى بدون تسجيل دخول) عشان منعملش حساب Auth
+    // من غير داعي لو الاسم مأخوذ أصلاً
+    const preSnap = await db.ref('usernames/'+cleanUname).get();
+    if(preSnap.exists()){ toast('اسم المستخدم مستخدم بالفعل'); return; }
+
+    // لازم ننشئ حساب الـ Auth الأول، لأن رول الفايربيس بتشترط auth != null
+    // على أي كتابة تحت usernames/ — الحجز مينفعش يحصل قبل تسجيل الدخول
+    cred = await auth.createUserWithEmailAndPassword(usernameToEmail(cleanUname), pass);
     const newUid = cred.user.uid;
+
+    // حجز اسم المستخدم بشكل ذرّي (transaction) بدل قراءة-ثم-كتابة، عشان نمنع
+    // احتمال (نادر لكن حقيقي) إن اتنين يسجلوا بنفس اليوزرنيم في نفس اللحظة بالظبط.
+    // القيمة المكتوبة لازم تبقى uid الحقيقي (مش placeholder) عشان تتطابق مع الرول.
+    const txResult = await db.ref('usernames/'+cleanUname).transaction(cur => cur===null ? newUid : undefined);
+    if(!txResult.committed){
+      toast('اسم المستخدم مستخدم بالفعل');
+      try{ await cred.user.delete(); }catch(_){}
+      return;
+    }
+    claimed = true;
+
     await db.ref('users/'+newUid).set({
       name, username:cleanUname, role:regRole, status:'pending', createdAt: firebase.database.ServerValue.TIMESTAMP
     });
-    await db.ref('usernames/'+cleanUname).set(newUid);
     toast('تم إنشاء الحساب، بانتظار تفعيل الأدمن');
   }catch(e){
-    if(reserved){ try{ await db.ref('usernames/'+cleanUname).remove(); }catch(_){} }
+    if(claimed){ try{ await db.ref('usernames/'+cleanUname).remove(); }catch(_){} }
+    if(cred && cred.user){ try{ await cred.user.delete(); }catch(_){} }
     toast('حدث خطأ: ' + (e.message||'حاول مرة أخرى'));
   } finally { if(btn){btn.disabled=false; btn.textContent='إنشاء الحساب';} }
 }
