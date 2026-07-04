@@ -1,0 +1,1309 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>رواسخ أكاديمية</title>
+
+<!-- ============================================================
+     رواسخ أكاديمية
+     ملف واحد شامل: HTML + CSS + JS (بنفس فلسفة "نافورة")
+     الأقسام مقسّمة بعلامات =====[ SECTION ]===== لتسهيل التعديل الجراحي لاحقًا
+     ============================================================ -->
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&family=Cairo:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+
+<!-- Firebase (compat SDK — أسهل في ملف واحد بدون build step) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+
+<!-- Agora RTC SDK -->
+<script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.20.0.js"></script>
+
+<style>
+/* =====[ SECTION: DESIGN TOKENS ]===== */
+:root{
+  /* لوحة الألوان — أخضر زمردي غامق / ذهبي / كريمي */
+  --emerald-950:#07231a;
+  --emerald-900:#0c3327;
+  --emerald-800:#123f30;
+  --emerald-700:#1a5240;
+  --emerald-600:#236b55;
+  --gold-500:#c9a227;
+  --gold-400:#dab84a;
+  --gold-300:#e8cd7a;
+  --cream-50:#faf6ec;
+  --cream-100:#f3ecda;
+  --cream-200:#e8dcc0;
+  --ink-900:#1b241f;
+  --ink-600:#4c5850;
+  --danger:#b3423a;
+  --success:#2f7d5e;
+  --warn:#c9822a;
+
+  --bg:var(--cream-50);
+  --surface:#ffffff;
+  --surface-2:var(--cream-100);
+  --text:var(--ink-900);
+  --text-dim:var(--ink-600);
+  --border:rgba(27,36,31,0.10);
+  --accent:var(--emerald-800);
+  --accent-2:var(--gold-500);
+  --shadow:0 10px 30px -12px rgba(11,41,31,0.25);
+  --radius-lg:22px;
+  --radius-md:16px;
+  --radius-sm:10px;
+  --font-display:'Amiri', serif;
+  --font-body:'Cairo', sans-serif;
+}
+[data-theme="dark"]{
+  --bg:var(--emerald-950);
+  --surface:#0e2b21;
+  --surface-2:#123527;
+  --text:#f2ead2;
+  --text-dim:#a9baaf;
+  --border:rgba(242,234,210,0.10);
+  --accent:var(--gold-400);
+  --accent-2:var(--gold-300);
+  --shadow:0 10px 34px -12px rgba(0,0,0,0.55);
+}
+
+*{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+html,body{height:100%;}
+body{
+  margin:0; background:var(--bg); color:var(--text);
+  font-family:var(--font-body); direction:rtl; overflow-x:hidden;
+  transition:background .35s ease, color .35s ease;
+}
+h1,h2,h3,.display{font-family:var(--font-display);}
+button{font-family:inherit; cursor:pointer;}
+input,select,textarea{font-family:inherit;}
+a{color:inherit; text-decoration:none;}
+::selection{background:var(--accent-2); color:var(--emerald-950);}
+
+/* شريط تمرير هادئ */
+::-webkit-scrollbar{width:6px; height:6px;}
+::-webkit-scrollbar-thumb{background:var(--border); border-radius:10px;}
+
+/* =====[ SECTION: ZIER (SIGNATURE MOTIF) — سبحة رقمية كمؤشر تقدّم ]===== */
+.tasbih{display:flex; align-items:center; gap:4px; direction:ltr;}
+.tasbih .bead{width:9px; height:9px; border-radius:50%; background:var(--border); transition:all .4s ease;}
+.tasbih .bead.filled{background:linear-gradient(160deg,var(--gold-400),var(--gold-500)); box-shadow:0 0 0 3px rgba(201,162,39,0.15);}
+.tasbih .imam{width:13px; height:13px; border-radius:3px; background:var(--accent); transform:rotate(45deg);}
+
+/* =====[ SECTION: APP SHELL ]===== */
+#app{min-height:100vh; display:flex; flex-direction:column; position:relative;}
+.screen{display:none; flex:1; flex-direction:column; animation:fadeSlide .45s cubic-bezier(.2,.8,.2,1);}
+.screen.active{display:flex;}
+@keyframes fadeSlide{from{opacity:0; transform:translateY(10px);} to{opacity:1; transform:translateY(0);}}
+@media (prefers-reduced-motion: reduce){ .screen{animation:none;} *{transition-duration:.01ms !important;} }
+
+.container{width:100%; max-width:520px; margin:0 auto; padding:22px 18px 100px;}
+.container.wide{max-width:920px;}
+
+/* =====[ SECTION: TOP BAR ]===== */
+.topbar{
+  position:sticky; top:0; z-index:30; background:var(--surface); border-bottom:1px solid var(--border);
+  display:flex; align-items:center; gap:12px; padding:14px 18px;
+}
+.topbar h1{font-size:19px; margin:0; flex:1;}
+.icon-btn{
+  width:38px; height:38px; border-radius:50%; border:1px solid var(--border); background:var(--surface-2);
+  display:flex; align-items:center; justify-content:center; color:var(--text); font-size:16px; flex-shrink:0;
+}
+.icon-btn:active{transform:scale(.92);}
+.back-btn{transform:scaleX(-1);}
+
+/* =====[ SECTION: BUTTONS / FORMS ]===== */
+.btn{
+  display:inline-flex; align-items:center; justify-content:center; gap:8px;
+  padding:14px 20px; border-radius:14px; border:none; font-weight:700; font-size:15px;
+  background:var(--accent); color:var(--surface); width:100%; transition:transform .15s ease, opacity .15s ease;
+}
+[data-theme="dark"] .btn{color:var(--emerald-950);}
+.btn:active{transform:scale(.97);}
+.btn.secondary{background:transparent; color:var(--accent); border:1.5px solid var(--accent);}
+.btn.ghost{background:var(--surface-2); color:var(--text);}
+.btn.danger{background:var(--danger); color:#fff;}
+.btn.sm{padding:9px 14px; font-size:13px; width:auto; border-radius:10px;}
+.btn:disabled{opacity:.5; pointer-events:none;}
+
+.field{margin-bottom:14px;}
+.field label{display:block; font-size:13px; color:var(--text-dim); margin-bottom:6px; font-weight:600;}
+.field input, .field select, .field textarea{
+  width:100%; padding:13px 15px; border-radius:12px; border:1.5px solid var(--border);
+  background:var(--surface); color:var(--text); font-size:15px; outline:none; transition:border .2s ease;
+}
+.field input:focus, .field select:focus, .field textarea:focus{border-color:var(--accent);}
+.field textarea{resize:vertical; min-height:70px;}
+
+.card{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); padding:18px; box-shadow:var(--shadow);}
+.chip{display:inline-flex; align-items:center; gap:6px; padding:5px 12px; border-radius:999px; font-size:12px; font-weight:700;}
+.chip.ok{background:rgba(47,125,94,.15); color:var(--success);}
+.chip.warn{background:rgba(201,130,42,.15); color:var(--warn);}
+.chip.danger{background:rgba(179,66,58,.15); color:var(--danger);}
+.chip.neutral{background:var(--surface-2); color:var(--text-dim);}
+
+.divider-orn{display:flex; align-items:center; gap:10px; margin:22px 0; color:var(--text-dim);}
+.divider-orn:before, .divider-orn:after{content:""; flex:1; height:1px; background:var(--border);}
+
+.toast{
+  position:fixed; bottom:100px; right:50%; transform:translateX(50%);
+  background:var(--ink-900); color:#fff; padding:12px 22px; border-radius:14px; font-size:14px; z-index:200;
+  box-shadow:var(--shadow); opacity:0; pointer-events:none; transition:all .35s ease; max-width:90%; text-align:center;
+}
+.toast.show{opacity:1; bottom:110px;}
+
+.loader-wrap{display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; gap:18px; background:var(--bg);}
+.loader-ring{width:56px; height:56px; border-radius:50%; border:4px solid var(--border); border-top-color:var(--accent); animation:spin 1s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+
+/* =====[ SECTION: AUTH SCREENS ]===== */
+.brand-hero{text-align:center; padding:50px 20px 30px;}
+.brand-hero .logo{
+  width:84px; height:84px; margin:0 auto 16px; border-radius:24px;
+  background:linear-gradient(155deg,var(--emerald-700),var(--emerald-900));
+  display:flex; align-items:center; justify-content:center; font-size:38px; color:var(--gold-400); box-shadow:var(--shadow);
+}
+.brand-hero h1{font-size:30px; margin:0 0 6px; color:var(--accent);}
+.brand-hero p{color:var(--text-dim); margin:0; font-size:14px;}
+
+.role-pick{display:grid; grid-template-columns:1fr 1fr; gap:14px; margin:24px 0;}
+.role-card{
+  background:var(--surface); border:2px solid var(--border); border-radius:var(--radius-md); padding:22px 14px;
+  text-align:center; display:flex; flex-direction:column; align-items:center; gap:8px;
+}
+.role-card .emoji{font-size:30px;}
+.role-card.selected{border-color:var(--accent); background:var(--surface-2);}
+.role-card b{font-size:15px;}
+.role-card span{font-size:12px; color:var(--text-dim);}
+
+.tabs-switch{display:flex; background:var(--surface-2); border-radius:14px; padding:4px; margin-bottom:20px;}
+.tabs-switch button{flex:1; padding:11px; border:none; background:transparent; border-radius:11px; font-weight:700; color:var(--text-dim); font-size:14px;}
+.tabs-switch button.active{background:var(--surface); color:var(--accent); box-shadow:0 2px 8px rgba(0,0,0,.08);}
+
+/* =====[ SECTION: BOTTOM NAV (شبيه واتساب) ]===== */
+.bottom-nav{
+  position:fixed; bottom:0; right:0; left:0; z-index:40; background:var(--surface); border-top:1px solid var(--border);
+  display:flex; padding:8px 6px calc(8px + env(safe-area-inset-bottom));
+}
+.bottom-nav button{
+  flex:1; background:none; border:none; display:flex; flex-direction:column; align-items:center; gap:4px;
+  padding:6px 2px; color:var(--text-dim); font-size:11px; font-weight:600; position:relative;
+}
+.bottom-nav button .ic{font-size:20px;}
+.bottom-nav button.active{color:var(--accent);}
+.bottom-nav .badge{
+  position:absolute; top:0; left:calc(50% - 2px); background:var(--danger); color:#fff; font-size:10px;
+  min-width:16px; height:16px; border-radius:8px; display:flex; align-items:center; justify-content:center; padding:0 4px;
+}
+
+/* =====[ SECTION: LISTS (طلاب/معلمات/مفاتيح) ]===== */
+.list-item{
+  display:flex; align-items:center; gap:12px; padding:13px; background:var(--surface); border:1px solid var(--border);
+  border-radius:var(--radius-md); margin-bottom:10px; position:relative; transition:transform .15s ease;
+}
+.list-item:active{transform:scale(.98);}
+.avatar{
+  width:48px; height:48px; border-radius:50%; flex-shrink:0; display:flex; align-items:center; justify-content:center;
+  font-weight:800; font-size:17px; color:#fff; background:linear-gradient(155deg,var(--emerald-600),var(--emerald-900));
+  position:relative;
+}
+.avatar .dot{position:absolute; bottom:1px; left:1px; width:12px; height:12px; border-radius:50%; border:2px solid var(--surface); background:var(--text-dim);}
+.avatar .dot.online{background:var(--success);}
+.li-body{flex:1; min-width:0;}
+.li-body b{display:block; font-size:15px; margin-bottom:2px;}
+.li-body span{display:block; font-size:12.5px; color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.li-meta{display:flex; flex-direction:column; align-items:flex-end; gap:6px; font-size:11px; color:var(--text-dim);}
+
+.progress-track{height:8px; border-radius:6px; background:var(--surface-2); overflow:hidden; margin-top:6px;}
+.progress-fill{height:100%; border-radius:6px; background:linear-gradient(90deg,var(--gold-500),var(--gold-400)); transition:width .6s ease;}
+
+/* =====[ SECTION: CHAT (شبيه واتساب) ]===== */
+.chat-screen{display:flex; flex-direction:column; height:100vh;}
+.chat-header{
+  display:flex; align-items:center; gap:12px; padding:12px 16px; background:var(--surface); border-bottom:1px solid var(--border); z-index:20;
+}
+.chat-header .li-body span{color:var(--success); font-weight:600;}
+.chat-actions{display:flex; gap:8px;}
+.chat-body{
+  flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:6px;
+  background-image: radial-gradient(circle at 10px 10px, var(--border) 1px, transparent 1.4px);
+  background-size:26px 26px; background-color:var(--bg);
+}
+.bubble{max-width:78%; padding:10px 14px; border-radius:16px; font-size:14.5px; line-height:1.6; position:relative; animation:popIn .25s ease;}
+@keyframes popIn{from{opacity:0; transform:scale(.9);} to{opacity:1; transform:scale(1);}}
+.bubble.me{align-self:flex-start; background:var(--accent); color:var(--surface); border-bottom-left-radius:4px;}
+[data-theme="dark"] .bubble.me{color:var(--emerald-950);}
+.bubble.them{align-self:flex-end; background:var(--surface); border:1px solid var(--border); border-bottom-right-radius:4px;}
+.bubble .meta{display:flex; gap:5px; align-items:center; justify-content:flex-end; font-size:10px; opacity:.7; margin-top:4px;}
+.bubble.system{align-self:center; background:var(--surface-2); color:var(--text-dim); font-size:12px; border-radius:10px; padding:6px 12px;}
+.chat-input-bar{display:flex; gap:8px; padding:10px 14px calc(10px + env(safe-area-inset-bottom)); background:var(--surface); border-top:1px solid var(--border); align-items:flex-end;}
+.chat-input-bar textarea{flex:1; max-height:110px; border-radius:20px; padding:11px 16px;}
+.send-btn{width:44px; height:44px; border-radius:50%; background:var(--accent); color:var(--surface); border:none; flex-shrink:0; font-size:17px;}
+[data-theme="dark"] .send-btn{color:var(--emerald-950);}
+
+/* =====[ SECTION: CALL UI ]===== */
+.call-overlay{
+  position:fixed; inset:0; z-index:300; background:linear-gradient(180deg,var(--emerald-950),var(--emerald-900));
+  display:none; flex-direction:column; align-items:center; justify-content:space-between; color:#f2ead2; padding:40px 24px calc(40px + env(safe-area-inset-bottom));
+  text-align:center;
+}
+.call-overlay.active{display:flex;}
+.call-overlay .avatar{width:110px; height:110px; font-size:38px; margin:auto 0 12px;}
+.call-status{font-size:14px; opacity:.75; letter-spacing:.5px;}
+.call-name{font-size:24px; font-family:var(--font-display);}
+.call-timer{font-size:15px; opacity:.85; direction:ltr;}
+.pulse-ring{position:relative;}
+.pulse-ring:before{content:""; position:absolute; inset:-14px; border-radius:50%; border:2px solid var(--gold-400); animation:pulse 1.8s ease-out infinite;}
+@keyframes pulse{0%{opacity:.8; transform:scale(.85);} 100%{opacity:0; transform:scale(1.35);}}
+.call-actions{display:flex; gap:26px; align-items:center;}
+.call-btn{
+  width:64px; height:64px; border-radius:50%; border:none; font-size:24px; display:flex; align-items:center; justify-content:center;
+  background:rgba(255,255,255,0.12); color:#fff;
+}
+.call-btn.reject, .call-btn.end{background:var(--danger); width:70px; height:70px; font-size:27px;}
+.call-btn.accept{background:var(--success); width:70px; height:70px; font-size:27px;}
+.call-btn.mute.active{background:var(--gold-500); color:var(--emerald-950);}
+
+/* =====[ SECTION: INCOMING CALL BANNER ]===== */
+.incoming-banner{
+  position:fixed; top:14px; right:14px; left:14px; z-index:250; background:var(--surface); border:1px solid var(--border);
+  border-radius:18px; padding:14px; display:none; align-items:center; gap:12px; box-shadow:var(--shadow); animation:dropIn .4s ease;
+}
+.incoming-banner.active{display:flex;}
+@keyframes dropIn{from{transform:translateY(-40px); opacity:0;} to{transform:translateY(0); opacity:1;}}
+
+/* =====[ SECTION: MODAL ]===== */
+.modal-bg{position:fixed; inset:0; background:rgba(7,35,26,0.55); z-index:150; display:none; align-items:flex-end; justify-content:center;}
+.modal-bg.active{display:flex;}
+.modal-sheet{
+  background:var(--surface); width:100%; max-width:520px; border-radius:24px 24px 0 0; padding:22px 20px calc(22px + env(safe-area-inset-bottom));
+  animation:sheetUp .35s cubic-bezier(.2,.8,.2,1); max-height:85vh; overflow-y:auto;
+}
+@keyframes sheetUp{from{transform:translateY(60px); opacity:0;} to{transform:translateY(0); opacity:1;}}
+.modal-sheet h3{margin:0 0 16px;}
+.sheet-handle{width:40px; height:4px; background:var(--border); border-radius:4px; margin:0 auto 16px;}
+
+/* =====[ SECTION: STARS ]===== */
+.stars{display:flex; gap:8px; justify-content:center; font-size:34px; direction:ltr; margin:14px 0;}
+.stars span{color:var(--border); cursor:pointer; transition:transform .15s ease;}
+.stars span.filled{color:var(--gold-500); transform:scale(1.1);}
+
+/* =====[ SECTION: STATS GRID ]===== */
+.stats-grid{display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:20px;}
+.stat-box{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-md); padding:16px; text-align:center;}
+.stat-box b{font-size:26px; display:block; color:var(--accent); font-family:var(--font-display);}
+.stat-box span{font-size:12px; color:var(--text-dim);}
+
+.section-title{font-size:14px; font-weight:800; color:var(--text-dim); margin:22px 0 12px; display:flex; align-items:center; justify-content:space-between;}
+
+.empty-state{text-align:center; padding:50px 20px; color:var(--text-dim);}
+.empty-state .emoji{font-size:44px; margin-bottom:10px; display:block;}
+
+.badge-item{display:flex; align-items:center; gap:10px; background:var(--surface-2); padding:10px 12px; border-radius:12px; margin-bottom:8px;}
+.badge-item .ic{font-size:20px;}
+
+.segmented{display:flex; gap:8px; overflow-x:auto; padding-bottom:4px; margin-bottom:16px;}
+.segmented button{white-space:nowrap; padding:9px 16px; border-radius:12px; border:1px solid var(--border); background:var(--surface); color:var(--text-dim); font-weight:700; font-size:13px;}
+.segmented button.active{background:var(--accent); color:var(--surface); border-color:var(--accent);}
+[data-theme="dark"] .segmented button.active{color:var(--emerald-950);}
+
+.key-code{font-family:monospace; direction:ltr; font-size:15px; font-weight:700; letter-spacing:1px; background:var(--surface-2); padding:4px 10px; border-radius:8px;}
+</style>
+</head>
+<body>
+<div id="app"><div class="loader-wrap"><div class="loader-ring"></div><div style="font-family:var(--font-display);color:var(--accent);font-size:18px">رواسخ أكاديمية</div></div></div>
+
+<div class="toast" id="toast"></div>
+<div class="incoming-banner" id="incomingBanner"></div>
+<div class="call-overlay" id="callOverlay"></div>
+<div class="modal-bg" id="modalBg"><div class="modal-sheet" id="modalSheet"></div></div>
+
+<script>
+/* =====[ SECTION: CONFIG — عدّل هنا فقط ]===== */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyDtyoR3uh3Cb9jPy2nAvw2_4Ine6KVeeaw",
+  authDomain: "adminscriptstarko.firebaseapp.com", // تأكد منها في Firebase Console
+  databaseURL: "https://adminscriptstarko-default-rtdb.firebaseio.com",
+  projectId: "adminscriptstarko", // تأكد منها في Firebase Console
+  storageBucket: "adminscriptstarko.appspot.com",
+  messagingSenderId: "310036534754", // تأكد منها في Firebase Console
+  appId: "1:310036534754:android:ba27e270c322f0164e15bb"
+};
+
+const AGORA_APP_ID = "0d60209ff93e4aa196f1ba79151ab296";
+// ملحوظة: الوضع دلوقتي "App ID فقط" (بدون Token) — لازم يتلغى الـ App Certificate من Agora Console
+// من: https://console.agora.io -> مشروعك -> Authentication -> اختار "App ID" بس (مش "App ID + Token")
+
+/* =====[ SECTION: INIT ]===== */
+firebase.initializeApp(FIREBASE_CONFIG);
+const auth = firebase.auth();
+const db = firebase.database();
+
+let state = {
+  user:null, profile:null, deviceId:null, theme:'light',
+  currentChatWith:null, chatListenerRef:null, msgsRef:null, presenceRef:null,
+  agoraClient:null, localAudioTrack:null, currentCallId:null, callTimerInt:null, callSeconds:0,
+  studentsCache:{}, teachersCache:{}, route:'loading', routeParams:{}
+};
+
+/* =====[ SECTION: UTILITIES ]===== */
+function $(sel,root=document){return root.querySelector(sel);}
+function $all(sel,root=document){return [...root.querySelectorAll(sel)];}
+function esc(str){ if(str==null) return ''; return String(str).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function toast(msg, ms=2600){
+  const t = $('#toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(t._h); t._h = setTimeout(()=>t.classList.remove('show'), ms);
+}
+function initials(name){ if(!name) return '؟'; return name.trim().split(' ').slice(0,2).map(w=>w[0]).join(''); }
+function fmtTime(ts){ if(!ts) return ''; const d=new Date(ts); return d.toLocaleTimeString('ar-EG',{hour:'2-digit',minute:'2-digit'}); }
+function fmtDate(ts){ if(!ts) return ''; const d=new Date(ts); return d.toLocaleDateString('ar-EG',{day:'numeric',month:'short'}); }
+function fmtDuration(sec){ const m=Math.floor(sec/60).toString().padStart(2,'0'); const s=(sec%60).toString().padStart(2,'0'); return `${m}:${s}`; }
+function pairId(a,b){ return [a,b].sort().join('_'); }
+// مولّد كود اشتراك من 8 خانات (استبعدت الحروف/الأرقام المتشابهة بصريًا زي 0/O و1/I)
+function uid8(){
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let s = '';
+  for(let i=0;i<8;i++){ s += chars[Math.floor(Math.random()*chars.length)]; }
+  return s;
+}
+function getDeviceId(){
+  let id = localStorage.getItem('rw_device_id');
+  if(!id){ id = 'dev_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,10); localStorage.setItem('rw_device_id', id); }
+  return id;
+}
+function showModal(html){ $('#modalSheet').innerHTML = `<div class="sheet-handle"></div>${html}`; $('#modalBg').classList.add('active'); }
+function hideModal(){ $('#modalBg').classList.remove('active'); }
+document.addEventListener('DOMContentLoaded', ()=>{
+  $('#modalBg').addEventListener('click', e=>{ if(e.target.id==='modalBg') hideModal(); });
+});
+
+function tasbihBar(percent){
+  percent = Math.max(0, Math.min(100, percent||0));
+  const total = 12; const filled = Math.round((percent/100)*total);
+  let html = '<div class="tasbih">';
+  for(let i=0;i<total;i++){ html += `<div class="bead ${i<filled?'filled':''}"></div>`; }
+  html += '</div>';
+  return html;
+}
+
+function setTheme(mode){
+  state.theme = mode; document.documentElement.setAttribute('data-theme', mode);
+  localStorage.setItem('rw_theme', mode);
+}
+(function initTheme(){
+  const saved = localStorage.getItem('rw_theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark':'light');
+  setTheme(saved);
+})();
+
+/* =====[ SECTION: SECURITY ALERT LOGGER ]===== */
+function logSecurityAlert(type, detail){
+  try{
+    db.ref('security_alerts').push({
+      type, detail: String(detail), uid: state.user? state.user.uid : null, deviceId: getDeviceId(), ts: firebase.database.ServerValue.TIMESTAMP
+    });
+  }catch(e){}
+}
+
+/* =====[ SECTION: RENDER ROOT ]===== */
+function render(){
+  const app = $('#app');
+  if(state.route==='loading'){ app.innerHTML = `<div class="loader-wrap"><div class="loader-ring"></div><div style="font-family:var(--font-display);color:var(--accent);font-size:18px">رواسخ أكاديمية</div></div>`; return; }
+  if(state.route==='auth'){ app.innerHTML = screenAuth(); bindAuthEvents(); return; }
+  if(state.route==='pending'){ app.innerHTML = screenPending(); bindPendingEvents(); return; }
+  if(state.route==='banned'){ app.innerHTML = screenBanned(); bindBannedEvents(); return; }
+
+  if(state.chatWith){ app.innerHTML = screenChat(); bindChatEvents(); return; }
+
+  if(state.profile && state.profile.role==='admin'){ app.innerHTML = screenAdminShell(); bindAdminEvents(); return; }
+  if(state.profile && state.profile.role==='teacher'){ app.innerHTML = screenTeacherShell(); bindTeacherEvents(); return; }
+  if(state.profile && state.profile.role==='student'){ app.innerHTML = screenStudentShell(); bindStudentEvents(); return; }
+}
+
+/* =====[ SECTION: AUTH SCREENS ]===== */
+let authTab = 'login';
+let regRole = null;
+function screenAuth(){
+  return `
+  <div class="screen active"><div class="container">
+    <div class="brand-hero">
+      <div class="logo">﷽</div>
+      <h1>رواسخ أكاديمية</h1>
+    </div>
+    <div class="tabs-switch">
+      <button data-tab="login" class="${authTab==='login'?'active':''}">تسجيل الدخول</button>
+      <button data-tab="register" class="${authTab==='register'?'active':''}">حساب جديد</button>
+    </div>
+    <div id="authFormArea">${authTab==='login' ? tplLoginForm() : tplRegisterForm()}</div>
+  </div></div>`;
+}
+function tplLoginForm(){
+  return `
+    <div class="field"><label>اسم المستخدم</label><input id="loginUsername" placeholder="مثال: ahmed_2026" autocomplete="username"></div>
+    <div class="field"><label>كلمة المرور</label><input id="loginPassword" type="password" placeholder="••••••••" autocomplete="current-password"></div>
+    <button class="btn" id="btnLogin">دخول</button>
+    <div class="divider-orn">بيانات الدخول محفوظة على جهازك</div>`;
+}
+function tplRegisterForm(){
+  return `
+    <div class="section-title">اختر دورك</div>
+    <div class="role-pick">
+      <div class="role-card ${regRole==='teacher'?'selected':''}" data-role="teacher"><div class="emoji">📖</div><b>معلمة</b><span>تعليم ومتابعة</span></div>
+      <div class="role-card ${regRole==='student'?'selected':''}" data-role="student"><div class="emoji">🌙</div><b>طالب/ة</b><span>حفظ ومراجعة</span></div>
+    </div>
+    <div class="field"><label>الاسم بالكامل</label><input id="regName" placeholder="اكتب اسمك"></div>
+    <div class="field"><label>اسم المستخدم</label><input id="regUsername" placeholder="بالإنجليزية بدون مسافات" autocomplete="username"></div>
+    <div class="field"><label>كلمة المرور</label><input id="regPassword" type="password" placeholder="8 أحرف على الأقل" autocomplete="new-password"></div>
+    <button class="btn" id="btnRegister">إنشاء الحساب</button>`;
+}
+function bindAuthEvents(){
+  $all('[data-tab]').forEach(b=>b.addEventListener('click', ()=>{ authTab=b.dataset.tab; render(); }));
+  if(authTab==='login'){
+    $('#btnLogin')?.addEventListener('click', doLogin);
+  } else {
+    $all('.role-card').forEach(c=>c.addEventListener('click', ()=>{ regRole=c.dataset.role; render(); }));
+    $('#btnRegister')?.addEventListener('click', doRegister);
+  }
+}
+function usernameToEmail(u){ return u.trim().toLowerCase().replace(/[^a-z0-9_.]/g,'') + '@rawasekh.app'; }
+
+async function doLogin(){
+  const uname = $('#loginUsername').value.trim();
+  const pass = $('#loginPassword').value;
+  if(!uname || !pass){ toast('من فضلك أدخل اسم المستخدم وكلمة المرور'); return; }
+  const btn = $('#btnLogin'); btn.disabled = true; btn.textContent='جارِ الدخول...';
+  try{
+    await auth.signInWithEmailAndPassword(usernameToEmail(uname), pass);
+  }catch(e){
+    logSecurityAlert('login_failed', uname);
+    toast('بيانات الدخول غير صحيحة');
+  } finally { if(btn){btn.disabled=false; btn.textContent='دخول';} }
+}
+async function doRegister(){
+  const name = $('#regName').value.trim();
+  const uname = $('#regUsername').value.trim();
+  const pass = $('#regPassword').value;
+  if(!regRole){ toast('اختر دورك أولاً'); return; }
+  if(!name || !uname || pass.length<8){ toast('أكمل البيانات (كلمة المرور 8 أحرف على الأقل)'); return; }
+  const cleanUname = uname.toLowerCase().replace(/[^a-z0-9_.]/g,'');
+  if(cleanUname.length<3){ toast('اسم مستخدم غير صالح'); return; }
+  const btn = $('#btnRegister'); btn.disabled=true; btn.textContent='جارِ الإنشاء...';
+  let reserved = false;
+  try{
+    // حجز اسم المستخدم بشكل ذرّي (transaction) بدل قراءة-ثم-كتابة، عشان نمنع
+    // احتمال (نادر لكن حقيقي) إن اتنين يسجلوا بنفس اليوزرنيم في نفس اللحظة بالظبط
+    const txResult = await db.ref('usernames/'+cleanUname).transaction(cur => cur===null ? 'RESERVED' : undefined);
+    if(!txResult.committed){ toast('اسم المستخدم مستخدم بالفعل'); return; }
+    reserved = true;
+    const cred = await auth.createUserWithEmailAndPassword(usernameToEmail(cleanUname), pass);
+    const newUid = cred.user.uid;
+    await db.ref('users/'+newUid).set({
+      name, username:cleanUname, role:regRole, status:'pending', createdAt: firebase.database.ServerValue.TIMESTAMP
+    });
+    await db.ref('usernames/'+cleanUname).set(newUid);
+    toast('تم إنشاء الحساب، بانتظار تفعيل الأدمن');
+  }catch(e){
+    if(reserved){ try{ await db.ref('usernames/'+cleanUname).remove(); }catch(_){} }
+    toast('حدث خطأ: ' + (e.message||'حاول مرة أخرى'));
+  } finally { if(btn){btn.disabled=false; btn.textContent='إنشاء الحساب';} }
+}
+
+/* =====[ SECTION: PENDING / BANNED SCREENS ]===== */
+function screenPending(){
+  return `<div class="screen active"><div class="container">
+    <div class="brand-hero">
+      <div class="logo">⏳</div>
+      <h1 style="font-size:22px">حسابك قيد المراجعة</h1>
+      <p>لسه محتاج تفعيل من الإدارة، أو أدخل كود الاشتراك لو معاك واحد</p>
+    </div>
+    <div class="card">
+      <div class="field"><label>كود التفعيل / الاشتراك</label><input id="redeemCode" placeholder="اكتب الكود هنا" style="text-transform:uppercase"></div>
+      <button class="btn" id="btnRedeem">تفعيل الحساب</button>
+    </div>
+    <button class="btn ghost" style="margin-top:14px" id="btnLogoutPending">تسجيل الخروج</button>
+  </div></div>`;
+}
+function bindPendingEvents(){
+  $('#btnRedeem')?.addEventListener('click', redeemCode);
+  $('#btnLogoutPending')?.addEventListener('click', ()=>auth.signOut());
+}
+async function redeemCode(){
+  const code = $('#redeemCode').value.trim().toUpperCase();
+  if(!code){ toast('اكتب الكود'); return; }
+  const btn = $('#btnRedeem'); btn.disabled=true; btn.textContent='جارِ التفعيل...';
+  try{
+    const codeSnap = await db.ref('codes/'+code).get();
+    if(!codeSnap.exists()){ toast('الكود غير موجود'); return; }
+    const c = codeSnap.val();
+    if(c.status!=='active' || c.deviceId){ toast('الكود مستخدم أو غير صالح'); logSecurityAlert('code_reuse_attempt', code); return; }
+    if(c.type !== state.profile.role){ toast('هذا الكود غير مخصص لدورك'); return; }
+    const dId = getDeviceId();
+    await db.ref('codes/'+code).update({
+      deviceId: dId, ownerName: c.ownerName, type: c.type, status: c.status, createdAt: c.createdAt, assignedUid: state.user.uid
+    });
+    const isTrial = c.plan==='trial';
+    const subUpdate = isTrial
+      ? { codeId: code, type: 'trial', status:'trial', expiresAt: Date.now() + 3*24*60*60*1000 }
+      : { codeId: code, type: c.plan||c.type, status:'active' };
+    await db.ref('users/'+state.user.uid+'/subscription').set(subUpdate);
+    await db.ref('users/'+state.user.uid+'/status').set('active');
+    toast('تم تفعيل حسابك بنجاح 🎉');
+  }catch(e){
+    toast('تعذر التفعيل: ' + (e.message||''));
+  } finally { if(btn){btn.disabled=false; btn.textContent='تفعيل الحساب';} }
+}
+function screenBanned(){
+  return `<div class="screen active"><div class="container">
+    <div class="brand-hero"><div class="logo">🚫</div><h1 style="font-size:22px">تم إيقاف حسابك</h1><p>تواصل مع الإدارة لمعرفة السبب</p></div>
+    <button class="btn ghost" id="btnLogoutBanned">تسجيل الخروج</button>
+  </div></div>`;
+}
+function bindBannedEvents(){ $('#btnLogoutBanned')?.addEventListener('click', ()=>auth.signOut()); }
+
+/* =====[ SECTION: AUTH STATE / ROUTING ]===== */
+let profileRef = null;
+auth.onAuthStateChanged(user=>{
+  if(profileRef){ profileRef.off(); profileRef=null; }
+  teardownChat(); teardownCallListener();
+  if(!user){ state.user=null; state.profile=null; state.route='auth'; render(); return; }
+  state.user = user;
+  // فحص إضافي: عقدة admins/{uid}:true منفصلة عن users/ — بعض المشاريع بتستخدمها بدل role:"admin"
+  db.ref('admins/'+user.uid).get().then(adminSnap=>{
+    const isAdminNode = adminSnap.exists() && adminSnap.val()===true;
+    profileRef = db.ref('users/'+user.uid);
+    profileRef.on('value', snap=>{
+      const p = snap.val();
+      if(isAdminNode){
+        state.profile = {...(p||{}), role:'admin'};
+        state.route='ready'; setupPresence();
+        render(); return;
+      }
+      if(!p){ state.route='auth'; render(); return; }
+      state.profile = p;
+      if(p.role==='admin'){ state.route='ready'; setupPresence(); }
+      else if(p.status==='banned'){ state.route='banned'; }
+      else if(p.status!=='active'){ state.route='pending'; }
+      else { state.route='ready'; setupPresence(); listenIncomingCalls(); }
+      render();
+    });
+  }).catch(()=>{
+    // لو مفيش صلاحية قراءة admins/ أصلاً، كمّل بالمسار العادي
+    profileRef = db.ref('users/'+user.uid);
+    profileRef.on('value', snap=>{
+      const p = snap.val();
+      if(!p){ state.route='auth'; render(); return; }
+      state.profile = p;
+      if(p.role==='admin'){ state.route='ready'; setupPresence(); }
+      else if(p.status==='banned'){ state.route='banned'; }
+      else if(p.status!=='active'){ state.route='pending'; }
+      else { state.route='ready'; setupPresence(); listenIncomingCalls(); }
+      render();
+    });
+  });
+});
+function setupPresence(){
+  if(state.presenceRef) return;
+  const r = db.ref('presence/'+state.user.uid);
+  state.presenceRef = r;
+  r.onDisconnect().set({online:false, lastSeen: firebase.database.ServerValue.TIMESTAMP});
+  r.set({online:true, lastSeen: firebase.database.ServerValue.TIMESTAMP});
+}
+function logout(){ auth.signOut(); }
+
+/* =====[ SECTION: ADMIN PANEL ]===== */
+let adminView = 'dashboard';
+function screenAdminShell(){
+  return `
+  <div class="screen active">
+    <div class="topbar"><h1>لوحة الإدارة</h1>
+      <button class="icon-btn" id="btnThemeToggle">${state.theme==='dark'?'☀️':'🌙'}</button>
+      <button class="icon-btn" id="btnLogout">⎋</button>
+    </div>
+    <div class="container wide" id="adminContent">${adminViewHtml()}</div>
+    <div class="bottom-nav">
+      <button data-v="dashboard" class="${adminView==='dashboard'?'active':''}"><span class="ic">📊</span>الرئيسية</button>
+      <button data-v="keys" class="${adminView==='keys'?'active':''}"><span class="ic">🔑</span>المفاتيح</button>
+      <button data-v="users" class="${adminView==='users'?'active':''}"><span class="ic">👥</span>المستخدمين</button>
+      <button data-v="assign" class="${adminView==='assign'?'active':''}"><span class="ic">🔗</span>الربط</button>
+      <button data-v="reports" class="${adminView==='reports'?'active':''}"><span class="ic">🚩</span>البلاغات</button>
+    </div>
+  </div>`;
+}
+function adminViewHtml(){
+  if(adminView==='dashboard') return tplAdminDashboard();
+  if(adminView==='keys') return tplAdminKeys();
+  if(adminView==='users') return tplAdminUsers();
+  if(adminView==='assign') return tplAdminAssign();
+  if(adminView==='reports') return tplAdminReports();
+  return '';
+}
+function bindAdminEvents(){
+  $('#btnThemeToggle')?.addEventListener('click', ()=>{ setTheme(state.theme==='dark'?'light':'dark'); render(); });
+  $('#btnLogout')?.addEventListener('click', logout);
+  $all('.bottom-nav [data-v]').forEach(b=>b.addEventListener('click', ()=>{ adminView=b.dataset.v; render(); }));
+  bindAdminViewEvents();
+}
+function refreshAdminContent(){ $('#adminContent').innerHTML = adminViewHtml(); bindAdminViewEvents(); }
+function bindAdminViewEvents(){
+  if(adminView==='dashboard') loadAdminStats();
+  if(adminView==='keys'){ loadAdminKeys(); $('#btnGenKey')?.addEventListener('click', openGenKeyModal); }
+  if(adminView==='users'){ loadAdminUsers(); }
+  if(adminView==='assign'){ loadAdminAssign(); }
+  if(adminView==='reports'){ loadAdminReports(); }
+}
+
+function tplAdminDashboard(){
+  return `<div id="statsArea" class="stats-grid"><div class="stat-box"><b>…</b><span>جارِ التحميل</span></div></div>
+  <div class="section-title">آخر التنبيهات الأمنية</div>
+  <div id="alertsPreview"><div class="empty-state">لا توجد تنبيهات</div></div>`;
+}
+function showLoadError(containerId, e){
+  const el = $('#'+containerId);
+  if(el) el.innerHTML = `<div class="empty-state"><span class="emoji">⚠️</span>تعذر تحميل البيانات<br><span style="font-size:11px;direction:ltr;display:inline-block;margin-top:6px">${esc(e && e.message || e)}</span></div>`;
+  console.error(e);
+}
+async function loadAdminStats(){
+  try{
+  const [usersSnap, codesSnap, alertsSnap] = await Promise.all([
+    db.ref('users').get(), db.ref('codes').get(), db.ref('security_alerts').limitToLast(5).get()
+  ]);
+  const users = usersSnap.val()||{};
+  let teachers=0, students=0, activeToday=0;
+  const todayStart = new Date(); todayStart.setHours(0,0,0,0);
+  Object.values(users).forEach(u=>{
+    if(u.role==='teacher') teachers++;
+    if(u.role==='student') students++;
+  });
+  const codes = codesSnap.val()||{};
+  const activeKeys = Object.values(codes).filter(c=>c.status==='active' && !c.deviceId).length;
+  $('#statsArea').innerHTML = `
+    <div class="stat-box"><b>${teachers}</b><span>معلمات</span></div>
+    <div class="stat-box"><b>${students}</b><span>طلاب</span></div>
+    <div class="stat-box"><b>${activeKeys}</b><span>مفاتيح متاحة</span></div>
+    <div class="stat-box"><b>${Object.keys(codes).length}</b><span>إجمالي المفاتيح</span></div>`;
+  const alerts = alertsSnap.val()||{};
+  const arr = Object.entries(alerts).reverse();
+  $('#alertsPreview').innerHTML = arr.length ? arr.map(([id,a])=>`
+    <div class="list-item"><div class="li-body"><b>${esc(a.type)}</b><span>${esc(a.detail||'')} · ${fmtDate(a.ts)} ${fmtTime(a.ts)}</span></div></div>`).join('') : '<div class="empty-state">لا توجد تنبيهات</div>';
+  }catch(e){ showLoadError('statsArea', e); showLoadError('alertsPreview', e); }
+}
+
+function tplAdminKeys(){
+  return `<button class="btn" id="btnGenKey">+ توليد مفتاح جديد</button>
+  <div class="section-title">المفاتيح</div>
+  <div id="keysList"><div class="empty-state">جارِ التحميل...</div></div>`;
+}
+async function loadAdminKeys(){
+  try{
+  const snap = await db.ref('codes').get();
+  const codes = snap.val()||{};
+  const entries = Object.entries(codes).sort((a,b)=>(b[1].createdAt||0)-(a[1].createdAt||0));
+  $('#keysList').innerHTML = entries.length ? entries.map(([id,c])=>`
+    <div class="list-item">
+      <div class="li-body">
+        <b class="key-code">${id}</b>
+        <span>${c.type==='teacher'?'معلمة':'طالب'} · ${c.plan||'—'} ${c.ownerName?(' · '+esc(c.ownerName)):''}</span>
+      </div>
+      <div class="li-meta">
+        <span class="chip ${c.deviceId?'neutral':'ok'}">${c.deviceId?'مستخدم':'متاح'}</span>
+        ${!c.deviceId?`<button class="btn sm danger" data-revoke="${id}">إلغاء</button>`:''}
+      </div>
+    </div>`).join('') : '<div class="empty-state"><span class="emoji">🔑</span>لا توجد مفاتيح بعد</div>';
+  $all('[data-revoke]').forEach(b=>b.addEventListener('click', async ()=>{
+    if(!confirm('إلغاء هذا المفتاح؟')) return;
+    await db.ref('codes/'+b.dataset.revoke).update({status:'expired'});
+    loadAdminKeys();
+  }));
+  }catch(e){ showLoadError('keysList', e); }
+}
+function openGenKeyModal(){
+  showModal(`
+    <h3>توليد مفتاح جديد</h3>
+    <div class="field"><label>نوع الحساب</label>
+      <select id="genType"><option value="student">طالب/ة</option><option value="teacher">معلمة</option></select>
+    </div>
+    <div class="field"><label>الخطة</label>
+      <select id="genPlan"><option value="trial">تجربة 3 أيام</option><option value="monthly">شهري</option><option value="quarterly">ربع سنوي</option></select>
+    </div>
+    <div class="field"><label>اسم صاحب المفتاح (اختياري)</label><input id="genOwner" placeholder="مثال: أحمد محمود"></div>
+    <button class="btn" id="btnConfirmGen">توليد</button>`);
+  $('#btnConfirmGen').addEventListener('click', async ()=>{
+    const type = $('#genType').value, plan = $('#genPlan').value, owner = $('#genOwner').value.trim();
+    const btn = $('#btnConfirmGen'); btn.disabled = true;
+    try{
+      const code = uid8();
+      await db.ref('codes/'+code).set({ type, plan, ownerName: owner||null, status:'active', createdAt: firebase.database.ServerValue.TIMESTAMP });
+      hideModal(); toast('تم توليد المفتاح: '+code);
+      if(adminView==='keys') loadAdminKeys();
+    }catch(e){ toast('تعذر توليد المفتاح: ' + (e.message||'')); btn.disabled=false; }
+  });
+}
+
+function tplAdminUsers(){
+  return `<div class="segmented">
+    <button data-f="all" class="active">الكل</button>
+    <button data-f="teacher">المعلمات</button>
+    <button data-f="student">الطلاب</button>
+    <button data-f="pending">قيد المراجعة</button>
+    <button data-f="banned">موقوفين</button>
+  </div>
+  <div id="usersList"><div class="empty-state">جارِ التحميل...</div></div>`;
+}
+let usersFilter='all';
+async function loadAdminUsers(){
+  try{
+  const snap = await db.ref('users').get();
+  const users = snap.val()||{};
+  renderUsersList(users);
+  $all('.segmented [data-f]').forEach(b=>b.addEventListener('click', ()=>{
+    usersFilter=b.dataset.f; $all('.segmented [data-f]').forEach(x=>x.classList.remove('active')); b.classList.add('active');
+    renderUsersList(users);
+  }));
+  }catch(e){ showLoadError('usersList', e); }
+}
+function renderUsersList(users){
+  let entries = Object.entries(users);
+  if(usersFilter==='teacher') entries = entries.filter(([,u])=>u.role==='teacher');
+  else if(usersFilter==='student') entries = entries.filter(([,u])=>u.role==='student');
+  else if(usersFilter==='pending') entries = entries.filter(([,u])=>u.status==='pending');
+  else if(usersFilter==='banned') entries = entries.filter(([,u])=>u.status==='banned');
+  $('#usersList').innerHTML = entries.length ? entries.map(([id,u])=>`
+    <div class="list-item">
+      <div class="avatar">${initials(u.name)}</div>
+      <div class="li-body"><b>${esc(u.name)}</b><span>@${esc(u.username)} · ${u.role==='teacher'?'معلمة':'طالب'}</span></div>
+      <div class="li-meta">
+        <span class="chip ${u.status==='active'?'ok':u.status==='banned'?'danger':'warn'}">${u.status==='active'?'مفعّل':u.status==='banned'?'موقوف':'قيد المراجعة'}</span>
+        <button class="btn sm ${u.status==='banned'?'ghost':'danger'}" data-toggleban="${id}" data-cur="${u.status}">${u.status==='banned'?'رفع الإيقاف':'إيقاف'}</button>
+      </div>
+    </div>`).join('') : '<div class="empty-state">لا يوجد مستخدمين</div>';
+  $all('[data-toggleban]').forEach(b=>b.addEventListener('click', async ()=>{
+    const newStatus = b.dataset.cur==='banned' ? 'active' : 'banned';
+    await db.ref('users/'+b.dataset.toggleban+'/status').set(newStatus);
+    toast(newStatus==='banned'?'تم إيقاف الحساب':'تم تفعيل الحساب');
+    loadAdminUsers();
+  }));
+}
+
+function tplAdminAssign(){
+  return `<div class="section-title">ربط الطلاب بالمعلمات</div><div id="assignArea"><div class="empty-state">جارِ التحميل...</div></div>`;
+}
+async function loadAdminAssign(){
+  try{
+  const [usersSnap, assignSnap] = await Promise.all([db.ref('users').get(), db.ref('assignments').get()]);
+  const users = usersSnap.val()||{}; const assignments = assignSnap.val()||{};
+  const teachers = Object.entries(users).filter(([,u])=>u.role==='teacher');
+  const students = Object.entries(users).filter(([,u])=>u.role==='student');
+  $('#assignArea').innerHTML = teachers.map(([tid,t])=>{
+    const myStudents = assignments[tid]?Object.keys(assignments[tid]):[];
+    return `<div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+        <div class="avatar">${initials(t.name)}</div>
+        <div><b>${esc(t.name)}</b><br><span style="font-size:12px;color:var(--text-dim)">${myStudents.length} طالب مخصص</span></div>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">
+        ${students.map(([sid,s])=>`
+          <label style="display:flex;align-items:center;gap:6px;background:var(--surface-2);padding:6px 10px;border-radius:10px;font-size:13px">
+            <input type="checkbox" data-assign-t="${tid}" data-assign-s="${sid}" ${myStudents.includes(sid)?'checked':''}> ${esc(s.name)}
+          </label>`).join('')}
+      </div>
+    </div>`;
+  }).join('') || '<div class="empty-state">لا توجد معلمات بعد</div>';
+  $all('[data-assign-t]').forEach(chk=>chk.addEventListener('change', async ()=>{
+    const t=chk.dataset.assignT, s=chk.dataset.assignS;
+    if(chk.checked){
+      await db.ref(`assignments/${t}/${s}`).set(true);
+      await db.ref(`studentTeacher/${s}`).set(t); // فهرس عكسي: الطالب يقرأ سطر واحد بس مش كل شجرة assignments
+    } else {
+      await db.ref(`assignments/${t}/${s}`).remove();
+      const cur = await db.ref(`studentTeacher/${s}`).get();
+      if(cur.exists() && cur.val()===t) await db.ref(`studentTeacher/${s}`).remove();
+    }
+    toast('تم تحديث الربط');
+  }));
+  }catch(e){ showLoadError('assignArea', e); }
+}
+
+function tplAdminReports(){
+  return `<div class="section-title">البلاغات</div><div id="reportsList"><div class="empty-state">جارِ التحميل...</div></div>
+  <div class="section-title">تنبيهات أمنية</div><div id="secAlertsList"><div class="empty-state">جارِ التحميل...</div></div>`;
+}
+async function loadAdminReports(){
+  try{
+  const [rSnap, aSnap, uSnap] = await Promise.all([db.ref('reports').get(), db.ref('security_alerts').limitToLast(30).get(), db.ref('users').get()]);
+  const reports = rSnap.val()||{}; const alerts = aSnap.val()||{}; const users = uSnap.val()||{};
+  const rEntries = Object.entries(reports).reverse();
+  $('#reportsList').innerHTML = rEntries.length ? rEntries.map(([id,r])=>`
+    <div class="list-item"><div class="li-body"><b>${esc(users[r.fromUid]?.name||'مستخدم')}</b><span>${esc(r.message)}</span></div>
+    <div class="li-meta"><span class="chip neutral">${fmtDate(r.ts)}</span></div></div>`).join('') : '<div class="empty-state">لا توجد بلاغات</div>';
+  const aEntries = Object.entries(alerts).reverse();
+  $('#secAlertsList').innerHTML = aEntries.length ? aEntries.map(([id,a])=>`
+    <div class="list-item"><div class="li-body"><b>${esc(a.type)}</b><span>${esc(a.detail||'')} · ${fmtDate(a.ts)} ${fmtTime(a.ts)}</span></div></div>`).join('') : '<div class="empty-state">لا توجد تنبيهات</div>';
+  }catch(e){ showLoadError('reportsList', e); showLoadError('secAlertsList', e); }
+}
+
+/* =====[ SECTION: TEACHER PANEL ]===== */
+let teacherView = 'students'; // students | profile | settings
+let teacherActiveStudent = null; // {uid, name}
+function screenTeacherShell(){
+  return `
+  <div class="screen active">
+    <div class="topbar">
+      ${teacherView==='profile' ? `<button class="icon-btn back-btn" id="btnBackToStudents">➜</button>` : ''}
+      <h1>${teacherView==='students'?'طلابي':teacherView==='profile'?esc(teacherActiveStudent?.name||''):'الإعدادات'}</h1>
+      ${teacherView!=='profile' ? `<button class="icon-btn" id="btnThemeToggle">${state.theme==='dark'?'☀️':'🌙'}</button>` : ''}
+    </div>
+    <div class="container" id="teacherContent">${teacherViewHtml()}</div>
+    ${teacherView!=='profile' ? `<div class="bottom-nav">
+      <button data-v="students" class="${teacherView==='students'?'active':''}"><span class="ic">📚</span>طلابي</button>
+      <button data-v="settings" class="${teacherView==='settings'?'active':''}"><span class="ic">⚙️</span>الإعدادات</button>
+    </div>` : ''}
+  </div>`;
+}
+function teacherViewHtml(){
+  if(teacherView==='students') return tplTeacherStudents();
+  if(teacherView==='profile') return tplTeacherStudentProfile();
+  if(teacherView==='settings') return tplSettings();
+  return '';
+}
+function bindTeacherEvents(){
+  $('#btnThemeToggle')?.addEventListener('click', ()=>{ setTheme(state.theme==='dark'?'light':'dark'); render(); });
+  $all('.bottom-nav [data-v]').forEach(b=>b.addEventListener('click', ()=>{ teacherView=b.dataset.v; render(); }));
+  $('#btnBackToStudents')?.addEventListener('click', ()=>{ teacherView='students'; teacherActiveStudent=null; render(); });
+  bindTeacherViewEvents();
+}
+function bindTeacherViewEvents(){
+  if(teacherView==='students') loadTeacherStudents();
+  if(teacherView==='profile') loadTeacherStudentProfile();
+  if(teacherView==='settings') bindSettingsEvents();
+}
+function tplTeacherStudents(){
+  return `<div id="myStudentsList"><div class="empty-state">جارِ التحميل...</div></div>`;
+}
+async function loadTeacherStudents(){
+  try{
+  const myUid = state.user.uid;
+  const assignSnap = await db.ref('assignments/'+myUid).get();
+  const myStudentIds = Object.keys(assignSnap.val()||{});
+  if(!myStudentIds.length){ $('#myStudentsList').innerHTML = '<div class="empty-state"><span class="emoji">🌙</span>لا يوجد طلاب مخصصين لك بعد</div>'; return; }
+  // نجيب بس بيانات الطلاب المخصصين لينا (مش شجرة /users أو /presence أو /progress كاملة)
+  const perStudent = await Promise.all(myStudentIds.map(sid=>Promise.all([
+    db.ref('users/'+sid).get(), db.ref('presence/'+sid).get(), db.ref('progress/'+sid).get()
+  ])));
+  const users={}, presence={}, progress={};
+  myStudentIds.forEach((sid,i)=>{
+    users[sid]=perStudent[i][0].val()||{}; presence[sid]=perStudent[i][1].val()||{}; progress[sid]=perStudent[i][2].val()||{};
+  });
+  $('#myStudentsList').innerHTML = myStudentIds.map(sid=>{
+    const s = users[sid]||{name:'طالب'};
+    const online = presence[sid]?.online;
+    const pct = progress[sid]?.totalPercent || 0;
+    return `<div class="list-item" data-open-student="${sid}" data-name="${esc(s.name)}">
+      <div class="avatar">${initials(s.name)}<span class="dot ${online?'online':''}"></span></div>
+      <div class="li-body"><b>${esc(s.name)}</b><span>${progress[sid]?.currentLevel || 'لم يبدأ بعد'}</span>
+        <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
+      </div>
+      <div class="li-meta"><span class="chip ${online?'ok':'neutral'}">${online?'متصل الآن':'غير متصل'}</span></div>
+    </div>`;
+  }).join('');
+  $all('[data-open-student]').forEach(el=>el.addEventListener('click', ()=>{
+    teacherActiveStudent = {uid: el.dataset.openStudent, name: el.dataset.name};
+    teacherView='profile'; render();
+  }));
+  }catch(e){ showLoadError('myStudentsList', e); }
+}
+function tplTeacherStudentProfile(){
+  const s = teacherActiveStudent;
+  return `
+  <div class="card" style="margin-bottom:16px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
+      <div class="avatar" style="width:56px;height:56px;font-size:20px">${initials(s.name)}</div>
+      <div style="flex:1"><b style="font-size:16px">${esc(s.name)}</b><div id="onlineStatus" style="font-size:12px;color:var(--text-dim)">…</div></div>
+    </div>
+    <div style="display:flex;gap:10px">
+      <button class="btn" id="btnOpenChat">💬 محادثة</button>
+      <button class="btn secondary" id="btnStartCall">📞 مكالمة</button>
+    </div>
+  </div>
+  <div class="section-title">التقدم العام</div>
+  <div class="card" style="margin-bottom:16px">
+    <div id="progressDisplay" style="margin-bottom:10px">${tasbihBar(0)}</div>
+    <button class="btn ghost sm" id="btnEditProgress">تحديث نسبة التقدم</button>
+  </div>
+  <div class="section-title">ماذا أنجزنا اليوم؟<button class="btn sm" id="btnAddLog">+ إضافة</button></div>
+  <div id="dailyLogsList"><div class="empty-state">جارِ التحميل...</div></div>`;
+}
+async function loadTeacherStudentProfile(){
+  const sid = teacherActiveStudent.uid;
+  db.ref('presence/'+sid).get().then(snap=>{
+    const p = snap.val();
+    $('#onlineStatus').textContent = p?.online ? 'متصل الآن' : ('آخر ظهور: '+ (p?.lastSeen? fmtDate(p.lastSeen)+' '+fmtTime(p.lastSeen) : 'غير معروف'));
+  });
+  db.ref('progress/'+sid).get().then(snap=>{
+    const pr = snap.val()||{};
+    $('#progressDisplay').innerHTML = `${tasbihBar(pr.totalPercent||0)}<div style="margin-top:8px;font-size:13px;color:var(--text-dim)">${esc(pr.currentLevel||'لم يحدد المستوى بعد')} · ${pr.totalPercent||0}%</div>`;
+  });
+  db.ref('dailyLogs/'+sid).limitToLast(30).get().then(snap=>{
+    const logs = snap.val()||{};
+    const entries = Object.entries(logs).reverse();
+    $('#dailyLogsList').innerHTML = entries.length ? entries.map(([id,l])=>`
+      <div class="list-item">
+        <div class="li-body"><b>${fmtDate(l.ts)}</b><span>${esc(l.text)} ${l.range?('· '+esc(l.range)):''}</span></div>
+        <div class="li-meta"><span class="chip ${l.rating==='excellent'?'ok':l.rating==='good'?'warn':'danger'}">${l.rating==='excellent'?'ممتاز':l.rating==='good'?'جيد':'يحتاج مراجعة'}</span></div>
+      </div>`).join('') : '<div class="empty-state">لا يوجد سجل بعد</div>';
+  });
+  $('#btnOpenChat')?.addEventListener('click', ()=>openChat(sid, teacherActiveStudent.name));
+  $('#btnStartCall')?.addEventListener('click', ()=>startCall(sid, teacherActiveStudent.name));
+  $('#btnEditProgress')?.addEventListener('click', openProgressModal);
+  $('#btnAddLog')?.addEventListener('click', openDailyLogModal);
+}
+function openProgressModal(){
+  showModal(`
+    <h3>تحديث تقدم الطالب</h3>
+    <div class="field"><label>المستوى الحالي</label><input id="progLevel" placeholder="مثال: حفظ جزء عمّ"></div>
+    <div class="field"><label>نسبة التقدم (%)</label><input id="progPct" type="number" min="0" max="100" placeholder="0-100"></div>
+    <button class="btn" id="btnSaveProgress">حفظ</button>`);
+  db.ref('progress/'+teacherActiveStudent.uid).get().then(s=>{ const pr=s.val()||{}; if($('#progLevel')){ $('#progLevel').value=pr.currentLevel||''; $('#progPct').value=pr.totalPercent||0; } });
+  $('#btnSaveProgress').addEventListener('click', async ()=>{
+    const level = $('#progLevel').value.trim(); const pct = Math.max(0,Math.min(100, parseInt($('#progPct').value)||0));
+    await db.ref('progress/'+teacherActiveStudent.uid).set({ currentLevel: level, totalPercent: pct, lastUpdatedBy: state.user.uid, lastUpdatedAt: firebase.database.ServerValue.TIMESTAMP });
+    hideModal(); toast('تم تحديث التقدم'); loadTeacherStudentProfile();
+  });
+}
+function openDailyLogModal(){
+  showModal(`
+    <h3>ماذا أنجزنا اليوم؟</h3>
+    <div class="field"><label>وصف مختصر</label><textarea id="logText" placeholder="سمّع من آية كذا إلى آية كذا"></textarea></div>
+    <div class="field"><label>التقييم</label>
+      <select id="logRating"><option value="excellent">ممتاز</option><option value="good">جيد</option><option value="needs_review">يحتاج مراجعة</option></select>
+    </div>
+    <button class="btn" id="btnSaveLog">حفظ السجل</button>`);
+  $('#btnSaveLog').addEventListener('click', async ()=>{
+    const text = $('#logText').value.trim(); if(!text){ toast('اكتب وصف الإنجاز'); return; }
+    await db.ref('dailyLogs/'+teacherActiveStudent.uid).push({
+      text, rating: $('#logRating').value, teacherUid: state.user.uid, ts: firebase.database.ServerValue.TIMESTAMP
+    });
+    hideModal(); toast('تم إضافة السجل'); loadTeacherStudentProfile();
+  });
+}
+
+/* =====[ SECTION: STUDENT PANEL ]===== */
+let studentView = 'home'; // home | settings
+let myTeacherCache = null;
+function screenStudentShell(){
+  return `
+  <div class="screen active">
+    <div class="topbar"><h1>${studentView==='home'?'رواسخ':'الإعدادات'}</h1>
+      <button class="icon-btn" id="btnThemeToggle">${state.theme==='dark'?'☀️':'🌙'}</button>
+    </div>
+    <div class="container" id="studentContent">${studentViewHtml()}</div>
+    <div class="bottom-nav">
+      <button data-v="home" class="${studentView==='home'?'active':''}"><span class="ic">🏠</span>الرئيسية</button>
+      <button data-v="settings" class="${studentView==='settings'?'active':''}"><span class="ic">⚙️</span>الإعدادات</button>
+    </div>
+  </div>`;
+}
+function studentViewHtml(){
+  if(studentView==='home') return tplStudentHome();
+  if(studentView==='settings') return tplSettings();
+  return '';
+}
+function bindStudentEvents(){
+  $('#btnThemeToggle')?.addEventListener('click', ()=>{ setTheme(state.theme==='dark'?'light':'dark'); render(); });
+  $all('.bottom-nav [data-v]').forEach(b=>b.addEventListener('click', ()=>{ studentView=b.dataset.v; render(); }));
+  bindStudentViewEvents();
+}
+function bindStudentViewEvents(){
+  if(studentView==='home') loadStudentHome();
+  if(studentView==='settings') bindSettingsEvents();
+}
+function tplStudentHome(){
+  return `<div id="studentHomeArea"><div class="empty-state">جارِ التحميل...</div></div>`;
+}
+async function findMyTeacher(){
+  if(myTeacherCache) return myTeacherCache;
+  const snap = await db.ref('studentTeacher/'+state.user.uid).get();
+  myTeacherCache = snap.val() || null;
+  return myTeacherCache;
+}
+async function loadStudentHome(){
+  const tid = await findMyTeacher();
+  if(!tid){ $('#studentHomeArea').innerHTML = '<div class="empty-state"><span class="emoji">📖</span>لسه معندكش معلمة مخصصة، استنى تفعيل الإدارة</div>'; return; }
+  const [tSnap, progSnap, presSnap] = await Promise.all([db.ref('users/'+tid).get(), db.ref('progress/'+state.user.uid).get(), db.ref('presence/'+tid).get()]);
+  const t = tSnap.val()||{name:'المعلمة'}; const pr = progSnap.val()||{}; const pres = presSnap.val()||{};
+  $('#studentHomeArea').innerHTML = `
+    <div class="card" style="margin-bottom:16px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+        <div class="avatar" style="width:56px;height:56px;font-size:20px">${initials(t.name)}<span class="dot ${pres.online?'online':''}"></span></div>
+        <div style="flex:1"><b style="font-size:16px">${esc(t.name)}</b><div style="font-size:12px;color:var(--text-dim)">${pres.online?'متصلة الآن':'غير متصلة'}</div></div>
+      </div>
+      <div style="display:flex;gap:10px">
+        <button class="btn" id="btnOpenChatS">💬 محادثة</button>
+        <button class="btn secondary" id="btnRateTeacher">⭐ تقييم</button>
+      </div>
+    </div>
+    <div class="section-title">تقدمي في الحفظ</div>
+    <div class="card" style="margin-bottom:16px">${tasbihBar(pr.totalPercent||0)}<div style="margin-top:8px;font-size:13px;color:var(--text-dim)">${esc(pr.currentLevel||'لم يبدأ بعد')} · ${pr.totalPercent||0}%</div></div>
+    <div class="section-title">ماذا أنجزنا</div>
+    <div id="studentLogsList"><div class="empty-state">جارِ التحميل...</div></div>`;
+  db.ref('dailyLogs/'+state.user.uid).limitToLast(30).get().then(snap=>{
+    const logs = snap.val()||{}; const entries = Object.entries(logs).reverse();
+    $('#studentLogsList').innerHTML = entries.length ? entries.map(([id,l])=>`
+      <div class="list-item"><div class="li-body"><b>${fmtDate(l.ts)}</b><span>${esc(l.text)}</span></div>
+      <div class="li-meta"><span class="chip ${l.rating==='excellent'?'ok':l.rating==='good'?'warn':'danger'}">${l.rating==='excellent'?'ممتاز':l.rating==='good'?'جيد':'يحتاج مراجعة'}</span></div></div>`).join('') : '<div class="empty-state">لا يوجد سجل بعد</div>';
+  });
+  $('#btnOpenChatS')?.addEventListener('click', ()=>openChat(tid, t.name));
+  $('#btnRateTeacher')?.addEventListener('click', ()=>openRatingModal(tid));
+}
+function openRatingModal(teacherUid){
+  let stars = 0;
+  showModal(`
+    <h3>قيّمي معلمتك</h3>
+    <div class="stars" id="starsPick">${[1,2,3,4,5].map(i=>`<span data-s="${i}">★</span>`).join('')}</div>
+    <div class="field"><label>ملاحظة (اختياري)</label><textarea id="rateNote" placeholder="اكتب رأيك"></textarea></div>
+    <button class="btn" id="btnSubmitRating">إرسال التقييم</button>`);
+  $all('#starsPick span').forEach(s=>s.addEventListener('click', ()=>{
+    stars = parseInt(s.dataset.s);
+    $all('#starsPick span').forEach(x=>x.classList.toggle('filled', parseInt(x.dataset.s)<=stars));
+  }));
+  $('#btnSubmitRating').addEventListener('click', async ()=>{
+    if(!stars){ toast('اختر عدد النجوم'); return; }
+    await db.ref('ratings/'+teacherUid+'/'+state.user.uid).push({ stars, note: $('#rateNote').value.trim()||null, ts: firebase.database.ServerValue.TIMESTAMP });
+    hideModal(); toast('شكرًا لتقييمك ⭐');
+  });
+}
+
+/* =====[ SECTION: SETTINGS (مشترك) ]===== */
+function tplSettings(){
+  return `
+  <div class="card" style="margin-bottom:16px;display:flex;align-items:center;gap:14px">
+    <div class="avatar" style="width:56px;height:56px;font-size:20px">${initials(state.profile.name)}</div>
+    <div><b style="font-size:16px">${esc(state.profile.name)}</b><div style="font-size:12px;color:var(--text-dim)">@${esc(state.profile.username)}</div></div>
+  </div>
+  <div class="section-title">المظهر</div>
+  <div class="card" style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:center">
+    <span>الوضع الليلي</span>
+    <button class="btn sm ${state.theme==='dark'?'':'ghost'}" id="btnToggleDarkSettings">${state.theme==='dark'?'مفعّل ✓':'تفعيل'}</button>
+  </div>
+  <div class="section-title">كلمة المرور</div>
+  <div class="card" style="margin-bottom:16px">
+    <div class="field"><label>كلمة مرور جديدة</label><input id="newPass" type="password" placeholder="8 أحرف على الأقل"></div>
+    <button class="btn secondary" id="btnChangePass">تحديث كلمة المرور</button>
+  </div>
+  <button class="btn danger" id="btnLogoutSettings">تسجيل الخروج</button>`;
+}
+function bindSettingsEvents(){
+  $('#btnToggleDarkSettings')?.addEventListener('click', ()=>{ setTheme(state.theme==='dark'?'light':'dark'); render(); });
+  $('#btnLogoutSettings')?.addEventListener('click', logout);
+  $('#btnChangePass')?.addEventListener('click', async ()=>{
+    const np = $('#newPass').value;
+    if(np.length<8){ toast('كلمة المرور قصيرة جدًا'); return; }
+    try{ await state.user.updatePassword(np); toast('تم تحديث كلمة المرور'); $('#newPass').value=''; }
+    catch(e){ toast('أعد تسجيل الدخول ثم حاول مرة أخرى'); }
+  });
+}
+
+/* =====[ SECTION: CHAT SYSTEM ]===== */
+function openChat(otherUid, otherName){
+  state.chatWith = {uid: otherUid, name: otherName};
+  render();
+}
+function closeChat(){
+  teardownChat();
+  state.chatWith = null;
+  render();
+}
+function teardownChat(){
+  if(state.msgsRef){ state.msgsRef.off(); state.msgsRef=null; }
+}
+function screenChat(){
+  const o = state.chatWith;
+  return `
+  <div class="screen active chat-screen">
+    <div class="chat-header">
+      <button class="icon-btn back-btn" id="btnCloseChat">➜</button>
+      <div class="avatar">${initials(o.name)}<span class="dot" id="chatOnlineDot"></span></div>
+      <div class="li-body"><b>${esc(o.name)}</b><span id="chatOnlineText">…</span></div>
+      <div class="chat-actions"><button class="icon-btn" id="btnCallFromChat">📞</button></div>
+    </div>
+    <div class="chat-body" id="chatBody"></div>
+    <div class="chat-input-bar">
+      <textarea id="chatInput" rows="1" placeholder="اكتب رسالتك..."></textarea>
+      <button class="send-btn" id="btnSendMsg">➤</button>
+    </div>
+  </div>`;
+}
+function bindChatEvents(){
+  const o = state.chatWith;
+  $('#btnCloseChat').addEventListener('click', closeChat);
+  $('#btnCallFromChat').addEventListener('click', ()=>startCall(o.uid, o.name));
+  $('#btnSendMsg').addEventListener('click', sendChatMessage);
+  $('#chatInput').addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendChatMessage(); } });
+  db.ref('presence/'+o.uid).get().then(snap=>{
+    const p = snap.val();
+    $('#chatOnlineDot')?.classList.toggle('online', !!p?.online);
+    if($('#chatOnlineText')) $('#chatOnlineText').textContent = p?.online ? 'متصل الآن' : 'غير متصل';
+  });
+  const chatId = pairId(state.user.uid, o.uid);
+  const msgsRef = db.ref('chatThreads/'+chatId+'/messages');
+  state.msgsRef = msgsRef;
+  msgsRef.limitToLast(200).on('value', snap=>{
+    const msgs = snap.val()||{};
+    const body = $('#chatBody');
+    if(!body) return;
+    const entries = Object.entries(msgs).sort((a,b)=>(a[1].ts||0)-(b[1].ts||0));
+    body.innerHTML = entries.map(([id,m])=>{
+      const mine = m.senderUid===state.user.uid;
+      return `<div class="bubble ${mine?'me':'them'}">${esc(m.text)}<div class="meta">${fmtTime(m.ts)}${mine?(' '+(m.read?'✓✓':'✓')):''}</div></div>`;
+    }).join('') || `<div class="bubble system">ابدأ المحادثة الآن 🌙</div>`;
+    body.scrollTop = body.scrollHeight;
+    // تحديث حالة القراءة للرسائل الواردة
+    entries.forEach(([id,m])=>{ if(!mine_(m) && !m.read){ db.ref(`chatThreads/${chatId}/messages/${id}/read`).set(true); } });
+    function mine_(m){ return m.senderUid===state.user.uid; }
+  });
+}
+async function sendChatMessage(){
+  const input = $('#chatInput'); const text = input.value.trim();
+  if(!text) return;
+  const o = state.chatWith; const chatId = pairId(state.user.uid, o.uid);
+  input.value='';
+  try{
+    await db.ref('chatThreads/'+chatId+'/messages').push({ senderUid: state.user.uid, text, ts: firebase.database.ServerValue.TIMESTAMP, read:false });
+  }catch(e){ toast('تعذر إرسال الرسالة'); }
+}
+
+/* =====[ SECTION: CALLS (AGORA) ]===== */
+function hashUidToNumber(uid){
+  let h = 0; for(let i=0;i<uid.length;i++){ h = (h*31 + uid.charCodeAt(i)) >>> 0; }
+  return (h % 2147483000) + 1;
+}
+// App ID فقط: بدون توكن، لازم يتلغى App Certificate من Agora Console (Authentication -> App ID)
+async function startCall(otherUid, otherName){
+  const callId = pairId(state.user.uid, otherUid);
+  const channel = 'channel_'+callId;
+  try{
+    await db.ref('calls/'+callId).set({ from: state.user.uid, to: otherUid, status:'ringing', channel, ts: firebase.database.ServerValue.TIMESTAMP });
+  }catch(e){ toast('تعذر بدء المكالمة'); return; }
+  openCallOverlay({uid:otherUid, name:otherName}, 'outgoing', callId, channel);
+  const stopWatcher = db.ref('calls/'+callId).on('value', snap=>{
+    const c = snap.val();
+    if(!c) return;
+    if(c.status==='rejected'){ toast(otherName+' رفض/ت المكالمة'); endCallUI(callId); }
+    if(c.status==='accepted'){ joinAgoraChannel(channel); }
+    if(c.status==='ended'){ endCallUI(callId); }
+  });
+}
+function listenIncomingCalls(){
+  teardownCallListener();
+  (async ()=>{
+    const myUid = state.user.uid;
+    let peers = [];
+    if(state.profile.role==='student'){
+      const tid = await findMyTeacher();
+      if(tid) peers=[tid];
+    } else if(state.profile.role==='teacher'){
+      const snap = await db.ref('assignments/'+myUid).get();
+      peers = Object.keys(snap.val()||{});
+    }
+    state._callListeners = state._callListeners || [];
+    peers.forEach(peerUid=>{
+      const callId = pairId(myUid, peerUid);
+      const ref = db.ref('calls/'+callId);
+      const cb = snap=>{
+        const c = snap.val();
+        if(c && c.status==='ringing' && c.to===myUid){ showIncomingBanner(peerUid, callId, c.channel); }
+        if(c && (c.status==='ended'||c.status==='rejected') ){ hideIncomingBanner(); }
+      };
+      ref.on('value', cb);
+      state._callListeners.push({ref, cb});
+    });
+  })();
+}
+function teardownCallListener(){
+  (state._callListeners||[]).forEach(({ref,cb})=>ref.off('value',cb));
+  state._callListeners = [];
+}
+async function showIncomingBanner(fromUid, callId, channel){
+  const snap = await db.ref('users/'+fromUid).get();
+  const name = (snap.val()||{}).name || 'مكالمة واردة';
+  const banner = $('#incomingBanner');
+  banner.innerHTML = `
+    <div class="avatar">${initials(name)}</div>
+    <div class="li-body"><b>${esc(name)}</b><span>مكالمة صوتية واردة...</span></div>
+    <button class="call-btn accept" style="width:44px;height:44px;font-size:16px" id="btnAcceptIncoming">✓</button>
+    <button class="call-btn reject" style="width:44px;height:44px;font-size:16px" id="btnRejectIncoming">✕</button>`;
+  banner.classList.add('active');
+  $('#btnAcceptIncoming').onclick = async ()=>{
+    banner.classList.remove('active');
+    await db.ref('calls/'+callId).update({status:'accepted'});
+    openCallOverlay({uid:fromUid, name}, 'incoming', callId, channel);
+    joinAgoraChannel(channel);
+  };
+  $('#btnRejectIncoming').onclick = async ()=>{
+    banner.classList.remove('active');
+    await db.ref('calls/'+callId).update({status:'rejected'});
+  };
+}
+function hideIncomingBanner(){ $('#incomingBanner').classList.remove('active'); }
+
+function openCallOverlay(peer, mode, callId, channel){
+  state.currentCallId = callId;
+  const overlay = $('#callOverlay');
+  overlay.innerHTML = `
+    <div></div>
+    <div class="pulse-ring"><div class="avatar" style="width:110px;height:110px;font-size:38px">${initials(peer.name)}</div></div>
+    <div>
+      <div class="call-name">${esc(peer.name)}</div>
+      <div class="call-status" id="callStatusText">${mode==='outgoing'?'جارِ الاتصال...':'متصل'}</div>
+      <div class="call-timer" id="callTimerText" style="display:none">00:00</div>
+    </div>
+    <div class="call-actions">
+      <button class="call-btn mute" id="btnMuteCall">🎙️</button>
+      <button class="call-btn end" id="btnEndCall">☎</button>
+    </div>`;
+  overlay.classList.add('active');
+  $('#btnEndCall').onclick = ()=>{ db.ref('calls/'+callId).update({status:'ended'}); endCallUI(callId); };
+  $('#btnMuteCall').onclick = (e)=>{
+    const btn = e.currentTarget; const muted = btn.classList.toggle('active');
+    if(state.localAudioTrack) state.localAudioTrack.setEnabled(!muted);
+    btn.textContent = muted ? '🔇' : '🎙️';
+  };
+}
+async function joinAgoraChannel(channel){
+  try{
+    const numericUid = hashUidToNumber(state.user.uid);
+    state.agoraClient = AgoraRTC.createClient({mode:'rtc', codec:'vp8'});
+    await state.agoraClient.join(AGORA_APP_ID, channel, null, numericUid);
+    state.localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack();
+    await state.agoraClient.publish([state.localAudioTrack]);
+    state.agoraClient.on('user-published', async (user, mediaType)=>{
+      await state.agoraClient.subscribe(user, mediaType);
+      if(mediaType==='audio') user.audioTrack.play();
+    });
+    $('#callStatusText').style.display='none';
+    $('#callTimerText').style.display='block';
+    state.callSeconds = 0;
+    state.callTimerInt = setInterval(()=>{ state.callSeconds++; const el=$('#callTimerText'); if(el) el.textContent=fmtDuration(state.callSeconds); }, 1000);
+  }catch(e){
+    console.error(e);
+    toast('تعذر الدخول على المكالمة — تأكد إن App Certificate ملغي من Agora Console');
+  }
+}
+async function endCallUI(callId){
+  hideIncomingBanner();
+  $('#callOverlay').classList.remove('active');
+  clearInterval(state.callTimerInt); state.callTimerInt=null;
+  if(state.localAudioTrack){ state.localAudioTrack.close(); state.localAudioTrack=null; }
+  if(state.agoraClient){ try{ await state.agoraClient.leave(); }catch(e){} state.agoraClient=null; }
+  db.ref('calls/'+callId).off();
+  state.currentCallId = null;
+}
+
+/* =====[ SECTION: BOOTSTRAP ]===== */
+render();
+</script>
+</body>
+</html>
