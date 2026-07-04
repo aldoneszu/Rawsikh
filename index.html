@@ -19,6 +19,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
 
 <!-- Agora RTC SDK -->
 <script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.20.0.js"></script>
@@ -103,6 +104,40 @@ a{color:inherit; text-decoration:none;}
 
 .container{width:100%; max-width:520px; margin:0 auto; padding:22px 18px 100px;}
 .container.wide{max-width:920px;}
+
+/* =====[ SECTION: RESPONSIVE / SCREEN SIZE FIXES ]===== */
+/* بدل استخدام 100vh فقط (بيعمل مشاكل على موبايل مع شريط المتصفح)، بنستخدم dvh لما تكون متاحة */
+.chat-screen{height:100vh;}
+@supports (height: 100dvh){ .chat-screen{height:100dvh;} }
+.call-overlay{min-height:100vh;}
+@supports (height: 100dvh){ .call-overlay{min-height:100dvh;} }
+#app{min-height:100vh;}
+@supports (height: 100dvh){ #app{min-height:100dvh;} }
+.loader-wrap{height:100vh;}
+@supports (height: 100dvh){ .loader-wrap{height:100dvh;} }
+
+/* تابلت */
+@media (min-width:700px){
+  .container{max-width:640px; padding:26px 24px 110px;}
+  .container.wide{max-width:960px;}
+  .role-pick{gap:18px;}
+  .stats-grid{gap:16px;}
+}
+/* شاشات كبيرة / كمبيوتر */
+@media (min-width:1024px){
+  body{background:var(--surface-2);}
+  #app{max-width:1180px; margin:0 auto; box-shadow:0 0 60px rgba(0,0,0,.08); background:var(--bg); min-height:100vh;}
+  .container{max-width:680px;}
+  .container.wide{max-width:1040px;}
+  .bottom-nav{max-width:1180px; margin:0 auto; left:0; right:0;}
+}
+/* شاشات صغيرة جدًا (أقل من 360px) */
+@media (max-width:359px){
+  .container{padding:16px 12px 92px;}
+  .brand-hero{padding:34px 10px 18px;}
+  .stats-grid{gap:8px;}
+  .stat-box b{font-size:22px;}
+}
 
 /* =====[ SECTION: TOP BAR ]===== */
 .topbar{
@@ -245,6 +280,27 @@ a{color:inherit; text-decoration:none;}
 .chat-input-bar textarea{flex:1; max-height:110px; border-radius:20px; padding:11px 16px;}
 .send-btn{width:44px; height:44px; border-radius:50%; background:var(--accent); color:var(--surface); border:none; flex-shrink:0; font-size:17px;}
 [data-theme="dark"] .send-btn{color:var(--emerald-950);}
+.attach-btn{width:44px; height:44px; border-radius:50%; background:var(--surface-2); color:var(--text); border:none; flex-shrink:0; font-size:19px;}
+.attach-btn:active{transform:scale(.92);}
+
+/* =====[ SECTION: CHAT MEDIA (صور/ملفات) ]===== */
+.bubble.media{padding:6px; overflow:hidden;}
+.bubble .chat-img{display:block; max-width:220px; max-height:280px; width:100%; border-radius:12px; object-fit:cover; cursor:pointer;}
+.bubble .chat-img-wrap{position:relative;}
+.bubble .chat-img-wrap .meta{position:absolute; bottom:6px; left:8px; background:rgba(0,0,0,.45); color:#fff; padding:2px 8px; border-radius:8px;}
+.bubble.file-bubble{display:flex; align-items:center; gap:10px; min-width:190px;}
+.bubble.file-bubble .file-ic{width:40px; height:40px; border-radius:10px; background:rgba(0,0,0,.08); display:flex; align-items:center; justify-content:center; font-size:19px; flex-shrink:0;}
+.bubble.file-bubble .file-info{flex:1; min-width:0;}
+.bubble.file-bubble .file-info b{display:block; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:150px;}
+.bubble.file-bubble .file-info span{font-size:11px; opacity:.75;}
+.bubble.file-bubble a.file-dl{color:inherit; font-size:18px;}
+.upload-progress-wrap{padding:8px 12px 4px;}
+.upload-progress-bar{height:4px; border-radius:4px; background:var(--surface-2); overflow:hidden;}
+.upload-progress-fill{height:100%; background:var(--accent); transition:width .2s ease;}
+.img-viewer{position:fixed; inset:0; background:rgba(0,0,0,.9); z-index:400; display:none; align-items:center; justify-content:center; padding:20px;}
+.img-viewer.active{display:flex;}
+.img-viewer img{max-width:100%; max-height:100%; border-radius:8px;}
+.img-viewer .close-viewer{position:absolute; top:18px; left:18px; width:40px; height:40px; border-radius:50%; background:rgba(255,255,255,.15); color:#fff; border:none; font-size:18px;}
 
 /* =====[ SECTION: CALL UI ]===== */
 .call-overlay{
@@ -322,6 +378,7 @@ a{color:inherit; text-decoration:none;}
 <div class="incoming-banner" id="incomingBanner"></div>
 <div class="call-overlay" id="callOverlay"></div>
 <div class="modal-bg" id="modalBg"><div class="modal-sheet" id="modalSheet"></div></div>
+<div class="img-viewer" id="imgViewer"><button class="close-viewer" id="btnCloseViewer">✕</button><img id="imgViewerImg" src="" alt=""></div>
 
 <script>
 /* =====[ SECTION: CONFIG — عدّل هنا فقط ]===== */
@@ -343,10 +400,11 @@ const AGORA_APP_ID = "0d60209ff93e4aa196f1ba79151ab296";
 firebase.initializeApp(FIREBASE_CONFIG);
 const auth = firebase.auth();
 const db = firebase.database();
+const storage = firebase.storage();
 
 let state = {
   user:null, profile:null, deviceId:null, theme:'light',
-  currentChatWith:null, chatListenerRef:null, msgsRef:null, presenceRef:null,
+  currentChatWith:null, chatListenerRef:null, msgsRef:null, presenceRef:null, chatPresenceRef:null,
   agoraClient:null, localAudioTrack:null, currentCallId:null, callTimerInt:null, callSeconds:0,
   studentsCache:{}, teachersCache:{}, route:'loading', routeParams:{}
 };
@@ -380,7 +438,15 @@ function showModal(html){ $('#modalSheet').innerHTML = `<div class="sheet-handle
 function hideModal(){ $('#modalBg').classList.remove('active'); }
 document.addEventListener('DOMContentLoaded', ()=>{
   $('#modalBg').addEventListener('click', e=>{ if(e.target.id==='modalBg') hideModal(); });
+  $('#imgViewer').addEventListener('click', e=>{ if(e.target.id==='imgViewer'||e.target.id==='btnCloseViewer') closeImgViewer(); });
 });
+function openImgViewer(url){ $('#imgViewerImg').src = url; $('#imgViewer').classList.add('active'); }
+function closeImgViewer(){ $('#imgViewer').classList.remove('active'); $('#imgViewerImg').src=''; }
+function fmtBytes(n){
+  if(!n) return '0 KB';
+  if(n < 1024*1024) return Math.max(1, Math.round(n/1024)) + ' KB';
+  return (n/(1024*1024)).toFixed(1) + ' MB';
+}
 
 function tasbihBar(percent){
   percent = Math.max(0, Math.min(100, percent||0));
@@ -828,15 +894,29 @@ async function loadAdminAssign(){
   }).join('') || '<div class="empty-state">لا توجد معلمات بعد</div>';
   $all('[data-assign-t]').forEach(chk=>chk.addEventListener('change', async ()=>{
     const t=chk.dataset.assignT, s=chk.dataset.assignS;
-    if(chk.checked){
-      await db.ref(`assignments/${t}/${s}`).set(true);
-      await db.ref(`studentTeacher/${s}`).set(t); // فهرس عكسي: الطالب يقرأ سطر واحد بس مش كل شجرة assignments
-    } else {
-      await db.ref(`assignments/${t}/${s}`).remove();
-      const cur = await db.ref(`studentTeacher/${s}`).get();
-      if(cur.exists() && cur.val()===t) await db.ref(`studentTeacher/${s}`).remove();
-    }
-    toast('تم تحديث الربط');
+    chk.disabled = true;
+    try{
+      if(chk.checked){
+        // كل طالب مربوط بمعلمة واحدة بس، فلو كان مربوط بمعلمة تانية نفصله منها الأول
+        const curSnap = await db.ref(`studentTeacher/${s}`).get();
+        const prevT = curSnap.val();
+        if(prevT && prevT!==t){
+          await db.ref(`assignments/${prevT}/${s}`).remove();
+          const prevChk = document.querySelector(`[data-assign-t="${prevT}"][data-assign-s="${s}"]`);
+          if(prevChk) prevChk.checked = false;
+        }
+        await db.ref(`assignments/${t}/${s}`).set(true);
+        await db.ref(`studentTeacher/${s}`).set(t); // فهرس عكسي: الطالب يقرأ سطر واحد بس مش كل شجرة assignments
+      } else {
+        await db.ref(`assignments/${t}/${s}`).remove();
+        const cur = await db.ref(`studentTeacher/${s}`).get();
+        if(cur.exists() && cur.val()===t) await db.ref(`studentTeacher/${s}`).remove();
+      }
+      toast('تم تحديث الربط');
+    }catch(e){
+      chk.checked = !chk.checked;
+      toast('تعذر تحديث الربط: '+(e.message||''));
+    } finally { chk.disabled = false; }
   }));
   }catch(e){ showLoadError('assignArea', e); }
 }
@@ -1132,6 +1212,7 @@ function closeChat(){
 }
 function teardownChat(){
   if(state.msgsRef){ state.msgsRef.off(); state.msgsRef=null; }
+  if(state.chatPresenceRef){ state.chatPresenceRef.off(); state.chatPresenceRef=null; }
 }
 function screenChat(){
   const o = state.chatWith;
@@ -1144,7 +1225,12 @@ function screenChat(){
       <div class="chat-actions"><button class="icon-btn" id="btnCallFromChat">📞</button></div>
     </div>
     <div class="chat-body" id="chatBody"></div>
+    <div class="upload-progress-wrap" id="uploadProgressWrap" style="display:none">
+      <div class="upload-progress-bar"><div class="upload-progress-fill" id="uploadProgressFill" style="width:0%"></div></div>
+    </div>
     <div class="chat-input-bar">
+      <input type="file" id="chatFileInput" style="display:none" accept="image/*,application/pdf,.doc,.docx,.mp3,.zip,.txt">
+      <button class="attach-btn" id="btnAttachFile" title="إرسال صورة أو ملف">📎</button>
       <textarea id="chatInput" rows="1" placeholder="اكتب رسالتك..."></textarea>
       <button class="send-btn" id="btnSendMsg">➤</button>
     </div>
@@ -1156,7 +1242,16 @@ function bindChatEvents(){
   $('#btnCallFromChat').addEventListener('click', ()=>startCall(o.uid, o.name));
   $('#btnSendMsg').addEventListener('click', sendChatMessage);
   $('#chatInput').addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendChatMessage(); } });
-  db.ref('presence/'+o.uid).get().then(snap=>{
+  $('#btnAttachFile').addEventListener('click', ()=> $('#chatFileInput').click());
+  $('#chatFileInput').addEventListener('change', e=>{
+    const file = e.target.files[0];
+    e.target.value='';
+    if(file) uploadChatFile(file);
+  });
+  // حالة الاتصال بشكل لحظي (مش مرة واحدة بس)
+  const presRef = db.ref('presence/'+o.uid);
+  state.chatPresenceRef = presRef;
+  presRef.on('value', snap=>{
     const p = snap.val();
     $('#chatOnlineDot')?.classList.toggle('online', !!p?.online);
     if($('#chatOnlineText')) $('#chatOnlineText').textContent = p?.online ? 'متصل الآن' : 'غير متصل';
@@ -1169,15 +1264,32 @@ function bindChatEvents(){
     const body = $('#chatBody');
     if(!body) return;
     const entries = Object.entries(msgs).sort((a,b)=>(a[1].ts||0)-(b[1].ts||0));
-    body.innerHTML = entries.map(([id,m])=>{
-      const mine = m.senderUid===state.user.uid;
-      return `<div class="bubble ${mine?'me':'them'}">${esc(m.text)}<div class="meta">${fmtTime(m.ts)}${mine?(' '+(m.read?'✓✓':'✓')):''}</div></div>`;
-    }).join('') || `<div class="bubble system">ابدأ المحادثة الآن 🌙</div>`;
+    body.innerHTML = entries.map(([id,m])=> renderChatBubble(m)).join('') || `<div class="bubble system">ابدأ المحادثة الآن 🌙</div>`;
     body.scrollTop = body.scrollHeight;
     // تحديث حالة القراءة للرسائل الواردة
-    entries.forEach(([id,m])=>{ if(!mine_(m) && !m.read){ db.ref(`chatThreads/${chatId}/messages/${id}/read`).set(true); } });
-    function mine_(m){ return m.senderUid===state.user.uid; }
+    entries.forEach(([id,m])=>{ if(m.senderUid!==state.user.uid && !m.read){ db.ref(`chatThreads/${chatId}/messages/${id}/read`).set(true); } });
+    $all('.chat-img', body).forEach(img=> img.addEventListener('click', ()=> openImgViewer(img.dataset.full||img.src)));
   });
+}
+function renderChatBubble(m){
+  const mine = m.senderUid===state.user.uid;
+  const tick = mine ? (' '+(m.read?'✓✓':'✓')) : '';
+  if(m.type==='image'){
+    return `<div class="bubble media ${mine?'me':'them'}">
+      <div class="chat-img-wrap">
+        <img class="chat-img" src="${esc(m.url)}" data-full="${esc(m.url)}" loading="lazy">
+        <div class="meta">${fmtTime(m.ts)}${tick}</div>
+      </div>
+    </div>`;
+  }
+  if(m.type==='file'){
+    return `<div class="bubble file-bubble ${mine?'me':'them'}">
+      <div class="file-ic">📄</div>
+      <div class="file-info"><b>${esc(m.fileName||'ملف')}</b><span>${fmtBytes(m.fileSize)}</span></div>
+      <a class="file-dl" href="${esc(m.url)}" target="_blank" rel="noopener" download>⬇️</a>
+    </div>`;
+  }
+  return `<div class="bubble ${mine?'me':'them'}">${esc(m.text)}<div class="meta">${fmtTime(m.ts)}${tick}</div></div>`;
 }
 async function sendChatMessage(){
   const input = $('#chatInput'); const text = input.value.trim();
@@ -1185,8 +1297,39 @@ async function sendChatMessage(){
   const o = state.chatWith; const chatId = pairId(state.user.uid, o.uid);
   input.value='';
   try{
-    await db.ref('chatThreads/'+chatId+'/messages').push({ senderUid: state.user.uid, text, ts: firebase.database.ServerValue.TIMESTAMP, read:false });
+    await db.ref('chatThreads/'+chatId+'/messages').push({ senderUid: state.user.uid, type:'text', text, ts: firebase.database.ServerValue.TIMESTAMP, read:false });
   }catch(e){ toast('تعذر إرسال الرسالة'); }
+}
+const MAX_CHAT_FILE_MB = 15;
+async function uploadChatFile(file){
+  const o = state.chatWith; if(!o) return;
+  if(file.size > MAX_CHAT_FILE_MB*1024*1024){ toast(`الملف كبير جدًا (الحد الأقصى ${MAX_CHAT_FILE_MB}MB)`); return; }
+  const chatId = pairId(state.user.uid, o.uid);
+  const isImage = file.type.startsWith('image/');
+  const safeName = file.name.replace(/[^a-zA-Z0-9_.\-\u0600-\u06FF]/g,'_');
+  const path = `chatFiles/${chatId}/${Date.now()}_${safeName}`;
+  const wrap = $('#uploadProgressWrap'), fill = $('#uploadProgressFill');
+  if(wrap) wrap.style.display='block';
+  try{
+    const ref = storage.ref().child(path);
+    const task = ref.put(file, {contentType: file.type||'application/octet-stream'});
+    task.on('state_changed', snap=>{
+      const pct = snap.totalBytes ? Math.round((snap.bytesTransferred/snap.totalBytes)*100) : 0;
+      if(fill) fill.style.width = pct+'%';
+    });
+    await task;
+    const url = await ref.getDownloadURL();
+    await db.ref('chatThreads/'+chatId+'/messages').push({
+      senderUid: state.user.uid, type: isImage?'image':'file', url,
+      fileName: file.name, fileSize: file.size, mimeType: file.type||null,
+      ts: firebase.database.ServerValue.TIMESTAMP, read:false
+    });
+  }catch(e){
+    console.error(e);
+    toast('تعذر رفع الملف: ' + (e.message||''));
+  } finally {
+    if(wrap){ wrap.style.display='none'; if(fill) fill.style.width='0%'; }
+  }
 }
 
 /* =====[ SECTION: CALLS (AGORA) ]===== */
