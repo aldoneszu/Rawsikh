@@ -450,14 +450,66 @@ function getDeviceId(){
 // جديد للصفحة لأنها كانت مجرد متغيرات JS عادية في الذاكرة من غير أي حفظ).
 function saveNavTab(key, value){ try{ localStorage.setItem('rw_nav_'+key, value); }catch(_){} }
 function loadNavTab(key, fallback){ try{ return localStorage.getItem('rw_nav_'+key) || fallback; }catch(_){ return fallback; } }
-function showModal(html){ $('#modalSheet').innerHTML = `<div class="sheet-handle"></div>${html}`; $('#modalBg').classList.add('active'); }
-function hideModal(){ $('#modalBg').classList.remove('active'); }
+
+// حفظ الشات المفتوح حالياً (نفس فكرة saveNavTab/loadNavTab فوق) عشان لو المستخدم
+// عمل Refresh وهو جوه شات معين، يرجّعه لنفس الشات بدل ما يترمي على الشاشة الرئيسية.
+// بنخزن معاه uid صاحب الحساب (myUid) عشان لو حساب تاني سجّل دخول بعد كده على نفس
+// الجهاز/المتصفح، مانرجّعوش على شات مش بتاعه بالغلط.
+function saveChatWith(o){
+  try{ localStorage.setItem('rw_chat_with', JSON.stringify({uid:o.uid, name:o.name, myUid: state.user? state.user.uid : null})); }catch(_){}
+}
+function loadChatWith(myUid){
+  try{
+    const raw = localStorage.getItem('rw_chat_with');
+    if(!raw) return null;
+    const parsed = JSON.parse(raw);
+    if(!parsed || !parsed.uid || parsed.myUid !== myUid) return null;
+    return {uid: parsed.uid, name: parsed.name};
+  }catch(_){ return null; }
+}
+function clearChatWith(){ try{ localStorage.removeItem('rw_chat_with'); }catch(_){} }
+
+/* =====[ SECTION: BACK BUTTON / HISTORY NAV STACK ]===== */
+// المشكلة: زرار الرجوع في الموبايل كان بيقفل التبويب/المتصفح ويطلّع المستخدم
+// برا المنصة خالص، حتى لو كان بس فاتح شات أو مودال أو صورة (يعني حاجة المفروض
+// الرجوع يقفلها هي بس ويسيبه جوه التطبيق). الحل: كل مرة نفتح "طبقة" فوق الشاشة
+// الأساسية (شات، مودال، فيوير صورة)، بنضيف Entry وهمي في history المتصفح.
+// أول ما المستخدم يدوس Back، المتصفح بيرجع الـ history خطوة، وإحنا بنمسك حدث
+// popstate ونقفل أعلى طبقة مفتوحة بدل ما نسيب المتصفح يطلّع من الصفحة. ولو
+// مفيش أي طبقة مفتوحة (يعني هو أصلاً واقف على شاشة رئيسية)، مبنعملش حاجة،
+// فالـ Back الطبيعي (خروج من الموقع) بيشتغل عادي زي أي تطبيق تاني.
+let navStack = [];
+let suppressNextPopstate = false;
+function pushNav(type){
+  navStack.push(type);
+  try{ history.pushState({rwNav:true, depth:navStack.length}, ''); }catch(_){}
+}
+// بتتنادى لما المستخدم يقفل الطبقة بنفسه (زرار X مثلاً) مش بزرار الرجوع،
+// عشان نلغي الـ history entry اللي كنا ضفناها وقت الفتح من غير ما نعمل تكرار.
+function popNavIfMatches(type){
+  if(navStack.length && navStack[navStack.length-1]===type){
+    navStack.pop();
+    suppressNextPopstate = true;
+    try{ history.back(); }catch(_){}
+  }
+}
+window.addEventListener('popstate', ()=>{
+  if(suppressNextPopstate){ suppressNextPopstate = false; return; }
+  if(!navStack.length) return; // مفيش طبقة مفتوحة — سيب الرجوع الطبيعي يحصل
+  const type = navStack.pop();
+  if(type==='imgViewer') closeImgViewer(true);
+  else if(type==='modal') hideModal(true);
+  else if(type==='chat') closeChat(true);
+});
+
+function showModal(html){ $('#modalSheet').innerHTML = `<div class="sheet-handle"></div>${html}`; $('#modalBg').classList.add('active'); pushNav('modal'); }
+function hideModal(fromBack){ $('#modalBg').classList.remove('active'); if(!fromBack) popNavIfMatches('modal'); }
 document.addEventListener('DOMContentLoaded', ()=>{
   $('#modalBg').addEventListener('click', e=>{ if(e.target.id==='modalBg') hideModal(); });
   $('#imgViewer').addEventListener('click', e=>{ if(e.target.id==='imgViewer'||e.target.id==='btnCloseViewer') closeImgViewer(); });
 });
-function openImgViewer(url){ $('#imgViewerImg').src = url; $('#imgViewer').classList.add('active'); }
-function closeImgViewer(){ $('#imgViewer').classList.remove('active'); $('#imgViewerImg').src=''; }
+function openImgViewer(url){ $('#imgViewerImg').src = url; $('#imgViewer').classList.add('active'); pushNav('imgViewer'); }
+function closeImgViewer(fromBack){ $('#imgViewer').classList.remove('active'); $('#imgViewerImg').src=''; if(!fromBack) popNavIfMatches('imgViewer'); }
 function fmtBytes(n){
   if(!n) return '0 KB';
   if(n < 1024*1024) return Math.max(1, Math.round(n/1024)) + ' KB';
@@ -736,6 +788,8 @@ let profileRef = null;
 // بترجع كل حاجة لوضعها الافتراضي في كل مرة يتم فيها تسجيل خروج.
 function resetLocalState(){
   state.chatWith = null;
+  clearChatWith(); // مسح أي شات محفوظ في localStorage عند تسجيل الخروج (زي باقي حالات النافيجيشن تحت)
+  navStack = []; // تصفير طبقات الرجوع (شات/مودال/صورة) المرتبطة بالحساب اللي خرج
   state.currentChatWith = null;
   state.currentCallId = null;
   if(state.callTimerInt){ clearInterval(state.callTimerInt); }
@@ -803,7 +857,7 @@ function routeFromProfile(uid, p, isAdminNode){
 auth.onAuthStateChanged(user=>{
   if(profileRef){ profileRef.off(); profileRef=null; }
   teardownChat(); teardownCallListener(); teardownCallPeerWatch();
-  if(!user){ state.user=null; state.profile=null; state.route='auth'; resetLocalState(); render(); return; }
+  if(!user){ state.user=null; state.profile=null; state.route='auth'; resetLocalState(); state._chatRestoreDone=false; render(); return; }
   state.user = user;
   state.sessionStartedAt = Date.now(); // يُستخدم للتحقق من أوامر "إجبار تسجيل الخروج" الصادرة من الأدمن بعد هذه اللحظة
   // فحص إضافي: عقدة admins/{uid}:true منفصلة عن users/ — بعض المشاريع بتستخدمها بدل role:"admin"
@@ -815,7 +869,7 @@ auth.onAuthStateChanged(user=>{
       if(p && p.forceLogoutAt && p.forceLogoutAt > state.sessionStartedAt){ auth.signOut(); return; }
       state.profile = isAdminNode ? {...(p||{}), role:'admin'} : p;
       state.route = routeFromProfile(user.uid, state.profile, isAdminNode);
-      if(state.route==='ready'){ setupPresence(); startTrialWatch(); if(!isAdminNode && p && p.role!=='admin') listenIncomingCalls(); }
+      if(state.route==='ready'){ setupPresence(); startTrialWatch(); restoreChatIfNeeded(); if(!isAdminNode && p && p.role!=='admin') listenIncomingCalls(); }
       render();
     });
   }).catch(()=>{
@@ -826,11 +880,20 @@ auth.onAuthStateChanged(user=>{
       if(p && p.forceLogoutAt && p.forceLogoutAt > state.sessionStartedAt){ auth.signOut(); return; }
       state.profile = p;
       state.route = routeFromProfile(user.uid, p, false);
-      if(state.route==='ready'){ setupPresence(); startTrialWatch(); if(p && p.role!=='admin') listenIncomingCalls(); }
+      if(state.route==='ready'){ setupPresence(); startTrialWatch(); restoreChatIfNeeded(); if(p && p.role!=='admin') listenIncomingCalls(); }
       render();
     });
   });
 });
+// استرجاع الشات المحفوظ (لو موجود) مرة واحدة بس لكل جلسة/تسجيل دخول، عشان لو
+// المستخدم قفل الشات بنفسه بعد الاسترجاع، ميرجعش له تاني مع أي تحديث تاني للبروفايل.
+function restoreChatIfNeeded(){
+  if(state.chatWith || state._chatRestoreDone) return;
+  if(!state.profile || (state.profile.role!=='teacher' && state.profile.role!=='student')) return;
+  state._chatRestoreDone = true;
+  const saved = loadChatWith(state.user.uid);
+  if(saved){ state.chatWith = saved; pushNav('chat'); }
+}
 function setupPresence(){
   if(state.presenceRef) return;
   const r = db.ref('presence/'+state.user.uid);
@@ -1843,11 +1906,15 @@ function bindSettingsEvents(){
 /* =====[ SECTION: CHAT SYSTEM ]===== */
 function openChat(otherUid, otherName){
   state.chatWith = {uid: otherUid, name: otherName};
+  saveChatWith(state.chatWith); // نحفظها عشان لو المستخدم عمل Refresh يرجع لنفس الشات
+  pushNav('chat');
   render();
 }
-function closeChat(){
+function closeChat(fromBack){
   teardownChat();
   state.chatWith = null;
+  clearChatWith(); // المستخدم قفل الشات بنفسه، فمن حقه إن الـ Refresh بعد كده يرجّعه للرئيسية
+  if(!fromBack) popNavIfMatches('chat');
   render();
 }
 function teardownChat(){
@@ -1878,7 +1945,7 @@ function screenChat(){
 }
 function bindChatEvents(){
   const o = state.chatWith;
-  $('#btnCloseChat').addEventListener('click', closeChat);
+  $('#btnCloseChat').addEventListener('click', ()=>closeChat());
   $('#btnCallFromChat').addEventListener('click', ()=>startCall(o.uid, o.name));
   $('#btnSendMsg').addEventListener('click', sendChatMessage);
   $('#chatInput').addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendChatMessage(); } });
