@@ -369,6 +369,16 @@ a{color:inherit; text-decoration:none;}
 [data-theme="dark"] .segmented button.active{color:var(--emerald-950);}
 
 .key-code{font-family:monospace; direction:ltr; font-size:15px; font-weight:700; letter-spacing:1px; background:var(--surface-2); padding:4px 10px; border-radius:8px;}
+
+/* =====[ SECTION: ADMIN KEYS TOOLBAR (بحث/فلاتر/ترتيب/إجراءات جماعية) ]===== */
+.keys-toolbar{display:flex; flex-direction:column; gap:10px; margin-bottom:14px;}
+.keys-toolbar .row{display:flex; gap:8px; flex-wrap:wrap;}
+.keys-toolbar select{flex:1; min-width:110px; padding:10px 12px; border-radius:12px; border:1.5px solid var(--border); background:var(--surface); color:var(--text); font-size:13px;}
+.keys-bulk-bar{display:flex; align-items:center; gap:8px; flex-wrap:wrap; background:var(--surface-2); border-radius:12px; padding:8px 10px; margin-bottom:10px; font-size:12.5px;}
+.keys-bulk-bar b{margin-left:auto;}
+.key-check{width:19px; height:19px; flex-shrink:0; accent-color:var(--accent);}
+.key-actions-row{display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;}
+.pagination-bar{display:flex; align-items:center; justify-content:center; gap:14px; margin:16px 0 6px; font-size:13px; color:var(--text-dim);}
 </style>
 </head>
 <body>
@@ -482,6 +492,7 @@ function render(){
   if(state.route==='auth'){ app.innerHTML = screenAuth(); bindAuthEvents(); return; }
   if(state.route==='pending'){ app.innerHTML = screenPending(); bindPendingEvents(); return; }
   if(state.route==='banned'){ app.innerHTML = screenBanned(); bindBannedEvents(); return; }
+  if(state.route==='expired'){ app.innerHTML = screenExpired(); bindExpiredEvents(); return; }
 
   if(state.chatWith){ app.innerHTML = screenChat(); bindChatEvents(); return; }
 
@@ -615,22 +626,51 @@ async function redeemCode(){
   const code = $('#redeemCode').value.trim().toUpperCase();
   if(!code){ toast('اكتب الكود'); return; }
   const btn = $('#btnRedeem'); btn.disabled=true; btn.textContent='جارِ التفعيل...';
+  const dId = getDeviceId();
+  const myUid = state.user.uid;
+  const myRole = state.profile.role;
   try{
-    const codeSnap = await db.ref('codes/'+code).get();
-    if(!codeSnap.exists()){ toast('الكود غير موجود'); return; }
-    const c = codeSnap.val();
-    if(c.status!=='active' || c.deviceId){ toast('الكود مستخدم أو غير صالح'); logSecurityAlert('code_reuse_attempt', code); return; }
-    if(c.type !== state.profile.role){ toast('هذا الكود غير مخصص لدورك'); return; }
-    const dId = getDeviceId();
-    await db.ref('codes/'+code).update({
-      deviceId: dId, ownerName: c.ownerName, type: c.type, status: c.status, createdAt: c.createdAt, assignedUid: state.user.uid
+    // عيب #7 (مُصلَح): كانت العملية عبارة عن "قراءة ثم كتابة" عادية (get ثم update)،
+    // يعني لو شخصين ضربوا نفس الكود في نفس اللحظة بالضبط، الاتنين ممكن يعدّوا فحص
+    // "الكود متاح" قبل ما أي واحد يكتب، والكود يُستخدم مرتين. دلوقتي بنستخدم
+    // transaction ذرّية زي حجز اسم المستخدم بالظبط: فايربيس بيضمن إن التعديل
+    // يحصل مرة واحدة بس على أحدث نسخة من البيانات، وأي محاولة تانية في نفس
+    // اللحظة هتتلغى (تترجع undefined) تلقائيًا.
+    const txResult = await db.ref('codes/'+code).transaction(cur=>{
+      if(cur===null) return; // الكود غير موجود أصلاً — نلغي المعاملة
+      if(cur.status!=='active' || cur.deviceId) return; // مستخدم أو غير صالح — نلغي المعاملة
+      if(cur.type !== myRole) return; // نوع غير مطابق لدور المستخدم — نلغي المعاملة
+      return {
+        ...cur,
+        deviceId: dId,
+        assignedUid: myUid,
+        deviceInfo: (navigator.userAgent||'').slice(0,150),
+        redeemedAt: firebase.database.ServerValue.TIMESTAMP
+      };
     });
-    const isTrial = c.plan==='trial';
+
+    if(!txResult.committed){
+      // المعاملة اتلغت، نجيب سبب واضح للمستخدم برسالة منفصلة (قراءة بسيطة، بدون كتابة)
+      const snap = await db.ref('codes/'+code).get();
+      if(!snap.exists()){ toast('الكود غير موجود'); }
+      else if(snap.val().type !== myRole){ toast('هذا الكود غير مخصص لدورك'); }
+      else { toast('الكود مستخدم أو غير صالح'); logSecurityAlert('code_reuse_attempt', code); }
+      return;
+    }
+
+    const finalCodeData = txResult.snapshot.val();
+    // تأكيد إضافي إننا فعلاً احنا اللي فزنا بالمعاملة (وليس مستخدم آخر كتب بيانات
+    // مطابقة بالتوقيت نفسه بشكل نادر جدًا)
+    if(!finalCodeData || finalCodeData.assignedUid !== myUid){
+      toast('الكود مستخدم أو غير صالح'); logSecurityAlert('code_reuse_attempt', code); return;
+    }
+
+    const isTrial = finalCodeData.plan==='trial';
     const subUpdate = isTrial
       ? { codeId: code, type: 'trial', status:'trial', expiresAt: Date.now() + 3*24*60*60*1000 }
-      : { codeId: code, type: c.plan||c.type, status:'active' };
-    await db.ref('users/'+state.user.uid+'/subscription').set(subUpdate);
-    await db.ref('users/'+state.user.uid+'/status').set('active');
+      : { codeId: code, type: finalCodeData.plan||finalCodeData.type, status:'active', expiresAt: finalCodeData.expiresAt||null };
+    await db.ref('users/'+myUid+'/subscription').set(subUpdate);
+    await db.ref('users/'+myUid+'/status').set('active');
     toast('تم تفعيل حسابك بنجاح 🎉');
   }catch(e){
     toast('تعذر التفعيل: ' + (e.message||''));
@@ -644,30 +684,112 @@ function screenBanned(){
 }
 function bindBannedEvents(){ $('#btnLogoutBanned')?.addEventListener('click', ()=>auth.signOut()); }
 
+// عيب #9 (مُصلَح): شاشة جديدة تظهر تلقائيًا لما التجربة (trial) تنتهي،
+// وتسمح للمستخدم يفعّل بكود جديد بدل ما الحساب يفضل "active" للأبد.
+function screenExpired(){
+  return `<div class="screen active"><div class="container">
+    <div class="brand-hero">
+      <div class="logo">⏳</div>
+      <h1 style="font-size:22px">انتهت فترة التجربة</h1>
+      <p>مدة التجربة (3 أيام) خلصت. أدخل/ي كود اشتراك جديد لتكملة الاستخدام</p>
+    </div>
+    <div class="card">
+      <div class="field"><label>كود التفعيل / الاشتراك</label><input id="redeemCode" placeholder="اكتب الكود هنا" style="text-transform:uppercase"></div>
+      <button class="btn" id="btnRedeem">تفعيل الحساب</button>
+    </div>
+    <button class="btn ghost" style="margin-top:14px" id="btnLogoutPending">تسجيل الخروج</button>
+  </div></div>`;
+}
+function bindExpiredEvents(){ bindPendingEvents(); }
+
 /* =====[ SECTION: AUTH STATE / ROUTING ]===== */
 let profileRef = null;
+
+// عيب #1-4 (مُصلَح): كل المتغيرات الـ Global دي كانت بتفضل عالقة بعد تسجيل
+// الخروج، فلو حساب تاني سجّل دخول في نفس المتصفح كان ممكن يشوف بيانات
+// الحساب اللي قبله (شات، طالب/ة نشطة، معلم مخصص، تاب مفتوح...). الدالة دي
+// بترجع كل حاجة لوضعها الافتراضي في كل مرة يتم فيها تسجيل خروج.
+function resetLocalState(){
+  state.chatWith = null;
+  state.currentChatWith = null;
+  state.currentCallId = null;
+  if(state.callTimerInt){ clearInterval(state.callTimerInt); }
+  state.callTimerInt = null;
+  state.callSeconds = 0;
+  state.agoraClient = null;
+  state.localAudioTrack = null;
+  state.studentsCache = {};
+  state.teachersCache = {};
+  state.routeParams = {};
+  // مهم: تصفير presenceRef برضو، عشان setupPresence() تقدر تسجّل الحضور
+  // للحساب الجديد اللي هيدخل بعد كده في نفس الـ tab (كانت هي دي القيمة
+  // اللي بتخلي setupPresence تعمل return بدري وتتجاهل الحساب الجديد).
+  state.presenceRef = null;
+  myTeacherCache = null;
+  teacherActiveStudent = null;
+  adminView = 'dashboard';
+  teacherView = 'students';
+  studentView = 'home';
+  authTab = 'login';
+  regRole = null;
+  usersFilter = 'all';
+  usersState = { search:'', sort:'newest', page:1 };
+  stopTrialWatch();
+}
+
+// عيب #9 (مُصلَح): مفيش أي كود كان بيتحقق من expiresAt للاشتراك التجريبي،
+// يعني حساب "تجربة 3 أيام" كان فعليًا مش بينتهي أبدًا. الدالة دي بتفحص
+// وقت انتهاء التجربة وترجع true/false.
+function isTrialExpired(p){
+  return !!(p && p.subscription && p.subscription.status==='trial' && p.subscription.expiresAt && Date.now() > p.subscription.expiresAt);
+}
+async function expireTrialIfNeeded(uid, p){
+  if(isTrialExpired(p) && p.status!=='expired'){
+    try{
+      await db.ref('users/'+uid).update({status:'expired', 'subscription/status':'expired'});
+    }catch(e){ /* لو فشل التحديث هيتحاول تاني في المرة الجاية */ }
+  }
+}
+// فحص دوري كل دقيقة وهو التطبيق مفتوح، عشان التجربة تنتهي فورًا فور
+// انتهاء المدة الزمنية حتى لو مفيش تعديل جديد في قاعدة البيانات يستدعي
+// المستمع (onAuthStateChanged/profileRef بيتفعّلوا فقط عند تغيّر الداتا،
+// مش عند مرور الوقت).
+let trialCheckInterval = null;
+function startTrialWatch(){
+  stopTrialWatch();
+  trialCheckInterval = setInterval(()=>{
+    if(state.user && state.profile) expireTrialIfNeeded(state.user.uid, state.profile);
+  }, 60000);
+}
+function stopTrialWatch(){ if(trialCheckInterval){ clearInterval(trialCheckInterval); trialCheckInterval=null; } }
+
+function routeFromProfile(uid, p, isAdminNode){
+  if(isAdminNode){ return 'ready'; }
+  if(!p) return 'auth';
+  if(p.role==='admin') return 'ready';
+  if(p.status==='banned') return 'banned';
+  if(isTrialExpired(p)){ expireTrialIfNeeded(uid, p); return 'expired'; }
+  if(p.status==='expired') return 'expired';
+  if(p.status!=='active') return 'pending';
+  return 'ready';
+}
+
 auth.onAuthStateChanged(user=>{
   if(profileRef){ profileRef.off(); profileRef=null; }
-  teardownChat(); teardownCallListener();
-  if(!user){ state.user=null; state.profile=null; state.route='auth'; render(); return; }
+  teardownChat(); teardownCallListener(); teardownCallPeerWatch();
+  if(!user){ state.user=null; state.profile=null; state.route='auth'; resetLocalState(); render(); return; }
   state.user = user;
+  state.sessionStartedAt = Date.now(); // يُستخدم للتحقق من أوامر "إجبار تسجيل الخروج" الصادرة من الأدمن بعد هذه اللحظة
   // فحص إضافي: عقدة admins/{uid}:true منفصلة عن users/ — بعض المشاريع بتستخدمها بدل role:"admin"
   db.ref('admins/'+user.uid).get().then(adminSnap=>{
     const isAdminNode = adminSnap.exists() && adminSnap.val()===true;
     profileRef = db.ref('users/'+user.uid);
     profileRef.on('value', snap=>{
       const p = snap.val();
-      if(isAdminNode){
-        state.profile = {...(p||{}), role:'admin'};
-        state.route='ready'; setupPresence();
-        render(); return;
-      }
-      if(!p){ state.route='auth'; render(); return; }
-      state.profile = p;
-      if(p.role==='admin'){ state.route='ready'; setupPresence(); }
-      else if(p.status==='banned'){ state.route='banned'; }
-      else if(p.status!=='active'){ state.route='pending'; }
-      else { state.route='ready'; setupPresence(); listenIncomingCalls(); }
+      if(p && p.forceLogoutAt && p.forceLogoutAt > state.sessionStartedAt){ auth.signOut(); return; }
+      state.profile = isAdminNode ? {...(p||{}), role:'admin'} : p;
+      state.route = routeFromProfile(user.uid, state.profile, isAdminNode);
+      if(state.route==='ready'){ setupPresence(); startTrialWatch(); if(!isAdminNode && p && p.role!=='admin') listenIncomingCalls(); }
       render();
     });
   }).catch(()=>{
@@ -675,12 +797,10 @@ auth.onAuthStateChanged(user=>{
     profileRef = db.ref('users/'+user.uid);
     profileRef.on('value', snap=>{
       const p = snap.val();
-      if(!p){ state.route='auth'; render(); return; }
+      if(p && p.forceLogoutAt && p.forceLogoutAt > state.sessionStartedAt){ auth.signOut(); return; }
       state.profile = p;
-      if(p.role==='admin'){ state.route='ready'; setupPresence(); }
-      else if(p.status==='banned'){ state.route='banned'; }
-      else if(p.status!=='active'){ state.route='pending'; }
-      else { state.route='ready'; setupPresence(); listenIncomingCalls(); }
+      state.route = routeFromProfile(user.uid, p, false);
+      if(state.route==='ready'){ setupPresence(); startTrialWatch(); if(p && p.role!=='admin') listenIncomingCalls(); }
       render();
     });
   });
@@ -696,6 +816,11 @@ function logout(){ auth.signOut(); }
 
 /* =====[ SECTION: ADMIN PANEL ]===== */
 let adminView = 'dashboard';
+// حالة لوحة المفاتيح: بحث/فلاتر/ترتيب/صفحات/تحديد جماعي
+let keysState = { search:'', status:'all', type:'all', sort:'newest', page:1, selected:new Set() };
+const KEYS_PAGE_SIZE = 12;
+function planDurationDays(plan){ return plan==='trial'?3 : plan==='monthly'?30 : plan==='quarterly'?90 : 30; }
+function keyDaysLeft(c){ if(!c.expiresAt) return null; return Math.ceil((c.expiresAt - Date.now())/86400000); }
 function screenAdminShell(){
   return `
   <div class="screen active">
@@ -738,6 +863,14 @@ function bindAdminViewEvents(){
 
 function tplAdminDashboard(){
   return `<div id="statsArea" class="stats-grid"><div class="stat-box"><b>…</b><span>جارِ التحميل</span></div></div>
+  <div class="section-title">أحدث التسجيلات</div>
+  <div id="recentRegs"><div class="empty-state">جارِ التحميل...</div></div>
+  <div class="section-title">أكثر الطلاب نشاطاً</div>
+  <div id="topStudents"><div class="empty-state">جارِ التحميل...</div></div>
+  <div class="section-title">أكثر المعلمات نشاطاً</div>
+  <div id="topTeachers"><div class="empty-state">جارِ التحميل...</div></div>
+  <div class="section-title">الاشتراكات المنتهية والقريبة من الانتهاء</div>
+  <div id="subsHealth"><div class="empty-state">جارِ التحميل...</div></div>
   <div class="section-title">آخر التنبيهات الأمنية</div>
   <div id="alertsPreview"><div class="empty-state">لا توجد تنبيهات</div></div>`;
 }
@@ -748,23 +881,94 @@ function showLoadError(containerId, e){
 }
 async function loadAdminStats(){
   try{
-  const [usersSnap, codesSnap, alertsSnap] = await Promise.all([
-    db.ref('users').get(), db.ref('codes').get(), db.ref('security_alerts').limitToLast(5).get()
+  const [usersSnap, codesSnap, alertsSnap, presenceSnap, progressSnap, assignSnap, callsSnap] = await Promise.all([
+    db.ref('users').get(), db.ref('codes').get(), db.ref('security_alerts').limitToLast(5).get(),
+    db.ref('presence').get(), db.ref('progress').get(), db.ref('assignments').get(), db.ref('calls').get()
   ]);
   const users = usersSnap.val()||{};
-  let teachers=0, students=0, activeToday=0;
-  const todayStart = new Date(); todayStart.setHours(0,0,0,0);
-  Object.values(users).forEach(u=>{
+  const presence = presenceSnap.val()||{};
+  const progress = progressSnap.val()||{};
+  const assignments = assignSnap.val()||{};
+  const calls = callsSnap.val()||{};
+  const userEntries = Object.entries(users);
+
+  let teachers=0, students=0, admins=0, activeSubs=0, expiredSubs=0, onlineCount=0;
+  userEntries.forEach(([uid,u])=>{
     if(u.role==='teacher') teachers++;
-    if(u.role==='student') students++;
+    else if(u.role==='student') students++;
+    else if(u.role==='admin') admins++;
+    if(u.status==='active') activeSubs++;
+    if(u.status==='expired') expiredSubs++;
+    if(presence[uid] && presence[uid].online) onlineCount++;
   });
   const codes = codesSnap.val()||{};
   const activeKeys = Object.values(codes).filter(c=>c.status==='active' && !c.deviceId).length;
+
+  // عدد الرسائل الإجمالي — قراءة كل الثريدز مرة واحدة (بيانات لوحة تحكم فقط، مش على مسار حرج)
+  let messagesCount = 0;
+  try{
+    const chatsSnap = await db.ref('chatThreads').get();
+    const chats = chatsSnap.val()||{};
+    Object.values(chats).forEach(t=>{ messagesCount += Object.keys(t.messages||{}).length; });
+  }catch(_){ /* لو مفيش صلاحية قراءة، نسيب العداد صفر بدل ما نكسر باقي اللوحة */ }
+
   $('#statsArea').innerHTML = `
+    <div class="stat-box"><b>${onlineCount}</b><span>متصلين الآن</span></div>
     <div class="stat-box"><b>${teachers}</b><span>معلمات</span></div>
     <div class="stat-box"><b>${students}</b><span>طلاب</span></div>
+    <div class="stat-box"><b>${admins}</b><span>أدمن</span></div>
     <div class="stat-box"><b>${activeKeys}</b><span>مفاتيح متاحة</span></div>
-    <div class="stat-box"><b>${Object.keys(codes).length}</b><span>إجمالي المفاتيح</span></div>`;
+    <div class="stat-box"><b>${Object.keys(codes).length}</b><span>إجمالي المفاتيح</span></div>
+    <div class="stat-box"><b>${activeSubs}</b><span>اشتراكات فعّالة</span></div>
+    <div class="stat-box"><b>${messagesCount}</b><span>رسائل الشات</span></div>
+    <div class="stat-box"><b>${Object.keys(calls).length}</b><span>مكالمات</span></div>`;
+
+  // أحدث التسجيلات
+  const recent = [...userEntries].sort((a,b)=>(b[1].createdAt||0)-(a[1].createdAt||0)).slice(0,5);
+  $('#recentRegs').innerHTML = recent.length ? recent.map(([id,u])=>`
+    <div class="list-item"><div class="avatar">${initials(u.name)}</div>
+      <div class="li-body"><b>${esc(u.name)}</b><span>@${esc(u.username)} · ${u.role==='teacher'?'معلمة':u.role==='admin'?'أدمن':'طالب'}</span></div>
+      <div class="li-meta"><span style="font-size:11px">${fmtDate(u.createdAt)}</span></div>
+    </div>`).join('') : '<div class="empty-state">لا يوجد مستخدمين</div>';
+
+  // أكثر الطلاب نشاطاً (حسب نسبة الإنجاز كمؤشر تقدّم/نشاط)
+  const topStu = userEntries.filter(([,u])=>u.role==='student')
+    .map(([id,u])=>({id,u,pct:(progress[id]&&progress[id].totalPercent)||0}))
+    .sort((a,b)=>b.pct-a.pct).slice(0,5);
+  $('#topStudents').innerHTML = topStu.length ? topStu.map(({id,u,pct})=>`
+    <div class="list-item"><div class="avatar">${initials(u.name)}</div>
+      <div class="li-body"><b>${esc(u.name)}</b><span>${progress[id]?.currentLevel||'لم يبدأ بعد'}</span>
+        <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
+      </div>
+      <div class="li-meta"><span style="font-size:11px">${pct}%</span></div>
+    </div>`).join('') : '<div class="empty-state">لا يوجد طلاب بعد</div>';
+
+  // أكثر المعلمات نشاطاً (حسب عدد الطلاب المخصصين كمؤشر حِمل العمل)
+  const topTea = userEntries.filter(([,u])=>u.role==='teacher')
+    .map(([id,u])=>({id,u,count:Object.keys(assignments[id]||{}).length}))
+    .sort((a,b)=>b.count-a.count).slice(0,5);
+  $('#topTeachers').innerHTML = topTea.length ? topTea.map(({id,u,count})=>`
+    <div class="list-item"><div class="avatar">${initials(u.name)}</div>
+      <div class="li-body"><b>${esc(u.name)}</b><span>${count} طالب مخصص</span></div>
+      <div class="li-meta"><span class="chip ${presence[id]&&presence[id].online?'ok':'neutral'}">${presence[id]&&presence[id].online?'متصلة':'غير متصلة'}</span></div>
+    </div>`).join('') : '<div class="empty-state">لا توجد معلمات بعد</div>';
+
+  // صحة الاشتراكات: منتهية + قريبة الانتهاء (خلال 3 أيام)، بالاعتماد على subscription.expiresAt
+  const soonMs = 3*24*60*60*1000;
+  const nowTs = Date.now();
+  const expiredList = userEntries.filter(([,u])=>u.status==='expired');
+  const expiringSoon = userEntries.filter(([,u])=>{
+    const exp = u.subscription && u.subscription.expiresAt;
+    return u.status==='active' && exp && exp>nowTs && (exp-nowTs)<=soonMs;
+  });
+  $('#subsHealth').innerHTML = `
+    <div class="list-item"><div class="li-body"><b>${expiredList.length}</b><span>حساب منتهي الاشتراك</span></div></div>
+    <div class="list-item"><div class="li-body"><b>${expiringSoon.length}</b><span>حساب سينتهي خلال 3 أيام</span></div></div>
+    ${expiringSoon.length ? expiringSoon.slice(0,5).map(([id,u])=>`
+      <div class="list-item"><div class="avatar">${initials(u.name)}</div>
+        <div class="li-body"><b>${esc(u.name)}</b><span>ينتهي ${fmtDate(u.subscription.expiresAt)}</span></div>
+      </div>`).join('') : ''}`;
+
   const alerts = alertsSnap.val()||{};
   const arr = Object.entries(alerts).reverse();
   $('#alertsPreview').innerHTML = arr.length ? arr.map(([id,a])=>`
@@ -775,30 +979,236 @@ async function loadAdminStats(){
 function tplAdminKeys(){
   return `<button class="btn" id="btnGenKey">+ توليد مفتاح جديد</button>
   <div class="section-title">المفاتيح</div>
-  <div id="keysList"><div class="empty-state">جارِ التحميل...</div></div>`;
+  <div class="keys-toolbar">
+    <div class="field" style="margin-bottom:0"><input id="keysSearch" placeholder="بحث بالكود أو اسم صاحب المفتاح..." value="${esc(keysState.search)}"></div>
+    <div class="row">
+      <select id="keysFilterStatus">
+        <option value="all">كل الحالات</option>
+        <option value="active">فعّال</option>
+        <option value="disabled">معطّل</option>
+        <option value="expired">منتهي</option>
+        <option value="used">مستخدم</option>
+        <option value="unused">غير مستخدم</option>
+      </select>
+      <select id="keysFilterType">
+        <option value="all">كل الأنواع</option>
+        <option value="teacher">معلمة</option>
+        <option value="student">طالب</option>
+      </select>
+      <select id="keysSort">
+        <option value="newest">الأحدث أولاً</option>
+        <option value="oldest">الأقدم أولاً</option>
+        <option value="expiry">الأقرب انتهاءً</option>
+      </select>
+    </div>
+    <div class="row">
+      <button class="btn sm ghost" id="btnExportKeysCSV">⬇️ تصدير CSV</button>
+      <button class="btn sm danger" id="btnDeleteExpiredKeys">حذف المنتهية</button>
+      <button class="btn sm danger" id="btnDeleteUnusedKeys">حذف غير المستخدمة</button>
+    </div>
+  </div>
+  <div id="keysBulkBar" class="keys-bulk-bar" style="display:none">
+    <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" class="key-check" id="keysSelectAll"> تحديد الكل</label>
+    <span id="keysSelectedCount">0 محدد</span>
+    <b><button class="btn sm danger" id="btnDeleteSelectedKeys">حذف المحدد</button></b>
+  </div>
+  <div id="keysList"><div class="empty-state">جارِ التحميل...</div></div>
+  <div id="keysPagination" class="pagination-bar"></div>`;
 }
+function filterSortKeys(codes){
+  let entries = Object.entries(codes);
+  const s = keysState.search.trim().toLowerCase();
+  if(s) entries = entries.filter(([id,c])=> id.toLowerCase().includes(s) || (c.ownerName||'').toLowerCase().includes(s));
+  if(keysState.type!=='all') entries = entries.filter(([,c])=>c.type===keysState.type);
+  if(keysState.status==='active') entries = entries.filter(([,c])=>c.status==='active');
+  else if(keysState.status==='disabled') entries = entries.filter(([,c])=>c.status==='disabled');
+  else if(keysState.status==='expired') entries = entries.filter(([,c])=>c.status==='expired');
+  else if(keysState.status==='used') entries = entries.filter(([,c])=>!!c.deviceId);
+  else if(keysState.status==='unused') entries = entries.filter(([,c])=>!c.deviceId);
+  if(keysState.sort==='oldest') entries.sort((a,b)=>(a[1].createdAt||0)-(b[1].createdAt||0));
+  else if(keysState.sort==='expiry') entries.sort((a,b)=>(a[1].expiresAt||Infinity)-(b[1].expiresAt||Infinity));
+  else entries.sort((a,b)=>(b[1].createdAt||0)-(a[1].createdAt||0));
+  return entries;
+}
+let _keysCache = {};
 async function loadAdminKeys(){
   try{
   const snap = await db.ref('codes').get();
-  const codes = snap.val()||{};
-  const entries = Object.entries(codes).sort((a,b)=>(b[1].createdAt||0)-(a[1].createdAt||0));
-  $('#keysList').innerHTML = entries.length ? entries.map(([id,c])=>`
+  _keysCache = snap.val()||{};
+  renderKeysList();
+  bindKeysToolbarEvents();
+  }catch(e){ showLoadError('keysList', e); }
+}
+function renderKeysList(){
+  const allEntries = filterSortKeys(_keysCache);
+  const totalPages = Math.max(1, Math.ceil(allEntries.length/KEYS_PAGE_SIZE));
+  if(keysState.page>totalPages) keysState.page = totalPages;
+  const start = (keysState.page-1)*KEYS_PAGE_SIZE;
+  const entries = allEntries.slice(start, start+KEYS_PAGE_SIZE);
+  $('#keysList').innerHTML = entries.length ? entries.map(([id,c])=>{
+    const daysLeft = keyDaysLeft(c);
+    let statusChip = c.status==='disabled' ? '<span class="chip warn">معطّل</span>'
+      : c.status==='expired' ? '<span class="chip danger">منتهي</span>'
+      : c.deviceId ? '<span class="chip neutral">مستخدم</span>'
+      : '<span class="chip ok">متاح</span>';
+    return `
     <div class="list-item">
+      <input type="checkbox" class="key-check" data-select="${id}" ${keysState.selected.has(id)?'checked':''}>
       <div class="li-body">
         <b class="key-code">${id}</b>
-        <span>${c.type==='teacher'?'معلمة':'طالب'} · ${c.plan||'—'} ${c.ownerName?(' · '+esc(c.ownerName)):''}</span>
+        <span>${c.type==='teacher'?'معلمة':'طالب'} · ${c.plan||'—'} ${c.ownerName?(' · '+esc(c.ownerName)):''}${daysLeft!=null?(' · متبقي '+Math.max(daysLeft,0)+' يوم'):''}</span>
       </div>
       <div class="li-meta">
-        <span class="chip ${c.deviceId?'neutral':'ok'}">${c.deviceId?'مستخدم':'متاح'}</span>
-        ${!c.deviceId?`<button class="btn sm danger" data-revoke="${id}">إلغاء</button>`:''}
+        ${statusChip}
+        ${c.deviceId?`<span style="font-size:10px;direction:ltr;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(c.deviceInfo||'')}">${esc((c.deviceInfo||'').slice(0,22))}</span>`:''}
       </div>
-    </div>`).join('') : '<div class="empty-state"><span class="emoji">🔑</span>لا توجد مفاتيح بعد</div>';
-  $all('[data-revoke]').forEach(b=>b.addEventListener('click', async ()=>{
-    if(!confirm('إلغاء هذا المفتاح؟')) return;
-    await db.ref('codes/'+b.dataset.revoke).update({status:'expired'});
-    loadAdminKeys();
+    </div>
+    <div class="key-actions-row" style="margin-bottom:10px">
+      <button class="btn sm ghost" data-copy="${id}">نسخ</button>
+      <button class="btn sm ghost" data-edit="${id}">تعديل</button>
+      ${c.status==='disabled' ? `<button class="btn sm ghost" data-reactivate="${id}">تفعيل</button>` : `<button class="btn sm ghost" data-disable="${id}">تعطيل</button>`}
+      ${c.deviceId ? `<button class="btn sm ghost" data-unlink="${id}">فك الربط</button>` : ''}
+      <button class="btn sm danger" data-delete="${id}">حذف نهائي</button>
+    </div>`;
+  }).join('') : '<div class="empty-state"><span class="emoji">🔑</span>لا توجد مفاتيح مطابقة</div>';
+
+  $('#keysPagination').innerHTML = allEntries.length ? `
+    <button class="btn sm ghost" id="btnKeysPrev" ${keysState.page<=1?'disabled':''}>السابق</button>
+    <span>صفحة ${keysState.page} من ${totalPages}</span>
+    <button class="btn sm ghost" id="btnKeysNext" ${keysState.page>=totalPages?'disabled':''}>التالي</button>` : '';
+
+  bindKeysListEvents();
+  updateKeysBulkBar();
+}
+function updateKeysBulkBar(){
+  const bar = $('#keysBulkBar');
+  if(!bar) return;
+  bar.style.display = keysState.selected.size ? 'flex' : 'none';
+  const cnt = $('#keysSelectedCount'); if(cnt) cnt.textContent = keysState.selected.size + ' محدد';
+}
+function bindKeysListEvents(){
+  $all('[data-select]').forEach(cb=>cb.addEventListener('change', ()=>{
+    const id = cb.dataset.select;
+    if(cb.checked) keysState.selected.add(id); else keysState.selected.delete(id);
+    updateKeysBulkBar();
   }));
-  }catch(e){ showLoadError('keysList', e); }
+  $all('[data-copy]').forEach(b=>b.addEventListener('click', ()=>copyKeyCode(b.dataset.copy)));
+  $all('[data-edit]').forEach(b=>b.addEventListener('click', ()=>openEditKeyModal(b.dataset.edit, _keysCache[b.dataset.edit])));
+  $all('[data-disable]').forEach(b=>b.addEventListener('click', ()=>setKeyStatus(b.dataset.disable, 'disabled')));
+  $all('[data-reactivate]').forEach(b=>b.addEventListener('click', ()=>setKeyStatus(b.dataset.reactivate, 'active')));
+  $all('[data-unlink]').forEach(b=>b.addEventListener('click', ()=>unlinkKeyDevice(b.dataset.unlink)));
+  $all('[data-delete]').forEach(b=>b.addEventListener('click', ()=>deleteKeysPermanently([b.dataset.delete])));
+  $('#btnKeysPrev')?.addEventListener('click', ()=>{ keysState.page--; renderKeysList(); });
+  $('#btnKeysNext')?.addEventListener('click', ()=>{ keysState.page++; renderKeysList(); });
+}
+let _keysSearchDebounce = null;
+function bindKeysToolbarEvents(){
+  $('#keysSearch').value = keysState.search;
+  $('#keysFilterStatus').value = keysState.status;
+  $('#keysFilterType').value = keysState.type;
+  $('#keysSort').value = keysState.sort;
+  $('#keysSearch').addEventListener('input', e=>{
+    clearTimeout(_keysSearchDebounce);
+    const val = e.target.value;
+    _keysSearchDebounce = setTimeout(()=>{ keysState.search = val; keysState.page = 1; renderKeysList(); }, 300);
+  });
+  $('#keysFilterStatus').addEventListener('change', e=>{ keysState.status = e.target.value; keysState.page=1; renderKeysList(); });
+  $('#keysFilterType').addEventListener('change', e=>{ keysState.type = e.target.value; keysState.page=1; renderKeysList(); });
+  $('#keysSort').addEventListener('change', e=>{ keysState.sort = e.target.value; keysState.page=1; renderKeysList(); });
+  $('#keysSelectAll').addEventListener('change', e=>{
+    const visible = filterSortKeys(_keysCache).slice((keysState.page-1)*KEYS_PAGE_SIZE, keysState.page*KEYS_PAGE_SIZE);
+    if(e.target.checked) visible.forEach(([id])=>keysState.selected.add(id));
+    else visible.forEach(([id])=>keysState.selected.delete(id));
+    renderKeysList();
+  });
+  $('#btnDeleteSelectedKeys').addEventListener('click', ()=>{
+    if(!keysState.selected.size) return;
+    deleteKeysPermanently([...keysState.selected]);
+  });
+  $('#btnDeleteExpiredKeys').addEventListener('click', ()=>{
+    const ids = Object.entries(_keysCache).filter(([,c])=>c.status==='expired').map(([id])=>id);
+    if(!ids.length){ toast('لا توجد مفاتيح منتهية'); return; }
+    deleteKeysPermanently(ids);
+  });
+  $('#btnDeleteUnusedKeys').addEventListener('click', ()=>{
+    const ids = Object.entries(_keysCache).filter(([,c])=>!c.deviceId).map(([id])=>id);
+    if(!ids.length){ toast('لا توجد مفاتيح غير مستخدمة'); return; }
+    deleteKeysPermanently(ids);
+  });
+  $('#btnExportKeysCSV').addEventListener('click', ()=>exportKeysCSV(filterSortKeys(_keysCache)));
+}
+function copyKeyCode(id){
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(id).then(()=>toast('تم نسخ الكود')).catch(()=>toast('تعذر النسخ'));
+  } else {
+    toast('النسخ غير مدعوم على هذا المتصفح');
+  }
+}
+async function setKeyStatus(id, status){
+  try{ await db.ref('codes/'+id).update({status}); toast(status==='disabled'?'تم تعطيل المفتاح':'تم تفعيل المفتاح'); await loadAdminKeys(); }
+  catch(e){ toast('تعذر تنفيذ العملية: '+(e.message||'')); }
+}
+async function unlinkKeyDevice(id){
+  if(!confirm('فك ربط الجهاز عن هذا المفتاح؟ سيصبح متاحًا للاستخدام على جهاز آخر.')) return;
+  try{ await db.ref('codes/'+id).update({deviceId:null, deviceInfo:null}); toast('تم فك الربط'); await loadAdminKeys(); }
+  catch(e){ toast('تعذر فك الربط: '+(e.message||'')); }
+}
+async function deleteKeysPermanently(ids){
+  if(!ids.length) return;
+  if(!confirm(ids.length===1 ? 'حذف هذا المفتاح نهائيًا؟ لا يمكن التراجع.' : `حذف ${ids.length} مفتاح نهائيًا؟ لا يمكن التراجع.`)) return;
+  try{
+    const updates = {};
+    ids.forEach(id=>{ updates['codes/'+id] = null; });
+    await db.ref().update(updates);
+    ids.forEach(id=>keysState.selected.delete(id));
+    toast('تم الحذف');
+    await loadAdminKeys();
+  }catch(e){ toast('تعذر الحذف: '+(e.message||'')); }
+}
+function exportKeysCSV(entries){
+  if(!entries.length){ toast('لا توجد بيانات للتصدير'); return; }
+  const header = ['code','type','plan','ownerName','status','used','deviceInfo','createdAt','expiresAt'];
+  const rows = entries.map(([id,c])=>[
+    id, c.type||'', c.plan||'', (c.ownerName||'').replace(/,/g,' '), c.status||'',
+    c.deviceId?'yes':'no', (c.deviceInfo||'').replace(/,/g,' '),
+    c.createdAt?new Date(c.createdAt).toISOString():'', c.expiresAt?new Date(c.expiresAt).toISOString():''
+  ]);
+  const csv = [header, ...rows].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob(['\uFEFF'+csv], {type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'rawasekh-keys-'+Date.now()+'.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 4000);
+  toast('جارِ تنزيل الملف');
+}
+function openEditKeyModal(id, c){
+  if(!c) return;
+  showModal(`
+    <h3>تعديل المفتاح <span class="key-code">${esc(id)}</span></h3>
+    <div class="field"><label>نوع الحساب</label>
+      <select id="editType"><option value="student" ${c.type==='student'?'selected':''}>طالب/ة</option><option value="teacher" ${c.type==='teacher'?'selected':''}>معلمة</option></select>
+    </div>
+    <div class="field"><label>الخطة</label>
+      <select id="editPlan">
+        <option value="trial" ${c.plan==='trial'?'selected':''}>تجربة 3 أيام</option>
+        <option value="monthly" ${c.plan==='monthly'?'selected':''}>شهري</option>
+        <option value="quarterly" ${c.plan==='quarterly'?'selected':''}>ربع سنوي</option>
+      </select>
+    </div>
+    <div class="field"><label>اسم صاحب المفتاح</label><input id="editOwner" value="${esc(c.ownerName||'')}"></div>
+    <div class="field"><label>تاريخ الانتهاء</label><input type="date" id="editExpiry" value="${c.expiresAt?new Date(c.expiresAt).toISOString().slice(0,10):''}"></div>
+    <button class="btn" id="btnSaveKeyEdit">حفظ التعديلات</button>`);
+  $('#btnSaveKeyEdit').addEventListener('click', async ()=>{
+    const btn = $('#btnSaveKeyEdit'); btn.disabled = true;
+    const type = $('#editType').value, plan = $('#editPlan').value, owner = $('#editOwner').value.trim();
+    const expiryVal = $('#editExpiry').value;
+    const expiresAt = expiryVal ? new Date(expiryVal+'T23:59:59').getTime() : null;
+    try{
+      await db.ref('codes/'+id).update({ type, plan, ownerName: owner||null, expiresAt });
+      hideModal(); toast('تم حفظ التعديلات'); await loadAdminKeys();
+    }catch(e){ toast('تعذر الحفظ: '+(e.message||'')); btn.disabled=false; }
+  });
 }
 function openGenKeyModal(){
   showModal(`
@@ -816,7 +1226,8 @@ function openGenKeyModal(){
     const btn = $('#btnConfirmGen'); btn.disabled = true;
     try{
       const code = uid8();
-      await db.ref('codes/'+code).set({ type, plan, ownerName: owner||null, status:'active', createdAt: firebase.database.ServerValue.TIMESTAMP });
+      const expiresAt = Date.now() + planDurationDays(plan)*24*60*60*1000;
+      await db.ref('codes/'+code).set({ type, plan, ownerName: owner||null, status:'active', createdAt: firebase.database.ServerValue.TIMESTAMP, expiresAt });
       hideModal(); toast('تم توليد المفتاح: '+code);
       if(adminView==='keys') loadAdminKeys();
     }catch(e){ toast('تعذر توليد المفتاح: ' + (e.message||'')); btn.disabled=false; }
@@ -831,18 +1242,41 @@ function tplAdminUsers(){
     <button data-f="pending">قيد المراجعة</button>
     <button data-f="banned">موقوفين</button>
   </div>
-  <div id="usersList"><div class="empty-state">جارِ التحميل...</div></div>`;
+  <div class="keys-toolbar">
+    <div class="field" style="margin-bottom:0"><input id="usersSearch" placeholder="بحث بالاسم أو اسم المستخدم..." value="${esc(usersState.search)}"></div>
+    <div class="row">
+      <select id="usersSort">
+        <option value="newest">الأحدث أولاً</option>
+        <option value="oldest">الأقدم أولاً</option>
+        <option value="name">بالاسم (أ-ي)</option>
+      </select>
+    </div>
+  </div>
+  <div id="usersList"><div class="empty-state">جارِ التحميل...</div></div>
+  <div id="usersPagination" class="pagination-bar"></div>`;
 }
 let usersFilter='all';
+let usersState = { search:'', sort:'newest', page:1 };
+const USERS_PAGE_SIZE = 12;
+let _usersCache = {};
 async function loadAdminUsers(){
   try{
   const snap = await db.ref('users').get();
-  const users = snap.val()||{};
-  renderUsersList(users);
+  _usersCache = snap.val()||{};
+  renderUsersList(_usersCache);
   $all('.segmented [data-f]').forEach(b=>b.addEventListener('click', ()=>{
-    usersFilter=b.dataset.f; $all('.segmented [data-f]').forEach(x=>x.classList.remove('active')); b.classList.add('active');
-    renderUsersList(users);
+    usersFilter=b.dataset.f; usersState.page=1; $all('.segmented [data-f]').forEach(x=>x.classList.remove('active')); b.classList.add('active');
+    renderUsersList(_usersCache);
   }));
+  $('#usersSearch').value = usersState.search;
+  $('#usersSort').value = usersState.sort;
+  let searchDebounce = null;
+  $('#usersSearch').addEventListener('input', e=>{
+    clearTimeout(searchDebounce);
+    const val = e.target.value;
+    searchDebounce = setTimeout(()=>{ usersState.search=val; usersState.page=1; renderUsersList(_usersCache); }, 300);
+  });
+  $('#usersSort').addEventListener('change', e=>{ usersState.sort=e.target.value; usersState.page=1; renderUsersList(_usersCache); });
   }catch(e){ showLoadError('usersList', e); }
 }
 function renderUsersList(users){
@@ -851,21 +1285,185 @@ function renderUsersList(users){
   else if(usersFilter==='student') entries = entries.filter(([,u])=>u.role==='student');
   else if(usersFilter==='pending') entries = entries.filter(([,u])=>u.status==='pending');
   else if(usersFilter==='banned') entries = entries.filter(([,u])=>u.status==='banned');
-  $('#usersList').innerHTML = entries.length ? entries.map(([id,u])=>`
+  const s = usersState.search.trim().toLowerCase();
+  if(s) entries = entries.filter(([,u])=>(u.name||'').toLowerCase().includes(s) || (u.username||'').toLowerCase().includes(s));
+  if(usersState.sort==='oldest') entries.sort((a,b)=>(a[1].createdAt||0)-(b[1].createdAt||0));
+  else if(usersState.sort==='name') entries.sort((a,b)=>(a[1].name||'').localeCompare(b[1].name||'', 'ar'));
+  else entries.sort((a,b)=>(b[1].createdAt||0)-(a[1].createdAt||0));
+
+  const totalPages = Math.max(1, Math.ceil(entries.length/USERS_PAGE_SIZE));
+  if(usersState.page>totalPages) usersState.page = totalPages;
+  const pageEntries = entries.slice((usersState.page-1)*USERS_PAGE_SIZE, usersState.page*USERS_PAGE_SIZE);
+
+  $('#usersList').innerHTML = pageEntries.length ? pageEntries.map(([id,u])=>`
     <div class="list-item">
       <div class="avatar">${initials(u.name)}</div>
-      <div class="li-body"><b>${esc(u.name)}</b><span>@${esc(u.username)} · ${u.role==='teacher'?'معلمة':'طالب'}</span></div>
+      <div class="li-body"><b>${esc(u.name)}</b><span>@${esc(u.username)} · ${u.role==='teacher'?'معلمة':u.role==='admin'?'أدمن':'طالب'}</span></div>
       <div class="li-meta">
         <span class="chip ${u.status==='active'?'ok':u.status==='banned'?'danger':'warn'}">${u.status==='active'?'مفعّل':u.status==='banned'?'موقوف':'قيد المراجعة'}</span>
-        <button class="btn sm ${u.status==='banned'?'ghost':'danger'}" data-toggleban="${id}" data-cur="${u.status}">${u.status==='banned'?'رفع الإيقاف':'إيقاف'}</button>
+        ${u.role!=='admin' ? `<button class="btn sm ${u.status==='banned'?'ghost':'danger'}" data-toggleban="${id}" data-cur="${u.status}">${u.status==='banned'?'رفع الإيقاف':'إيقاف'}</button>` : ''}
       </div>
-    </div>`).join('') : '<div class="empty-state">لا يوجد مستخدمين</div>';
+    </div>
+    ${u.role!=='admin' ? `
+    <div class="key-actions-row" style="margin-bottom:10px">
+      <button class="btn sm ghost" data-changerole="${id}">${u.role==='teacher'?'تحويل لطالب':'تحويل لمعلمة'}</button>
+      ${u.role==='student' ? `<button class="btn sm ghost" data-reassign="${id}">نقل لمعلمة أخرى</button>` : ''}
+      <button class="btn sm ghost" data-resetpass="${id}">إعادة تعيين كلمة المرور</button>
+      <button class="btn sm ghost" data-forcelogout="${id}">إجبار الخروج</button>
+      <button class="btn sm danger" data-deleteuser="${id}">حذف نهائي</button>
+    </div>` : ''}`).join('') : '<div class="empty-state">لا يوجد مستخدمين</div>';
+
+  $('#usersPagination').innerHTML = entries.length ? `
+    <button class="btn sm ghost" id="btnUsersPrev" ${usersState.page<=1?'disabled':''}>السابق</button>
+    <span>صفحة ${usersState.page} من ${totalPages}</span>
+    <button class="btn sm ghost" id="btnUsersNext" ${usersState.page>=totalPages?'disabled':''}>التالي</button>` : '';
+  $('#btnUsersPrev')?.addEventListener('click', ()=>{ usersState.page--; renderUsersList(users); });
+  $('#btnUsersNext')?.addEventListener('click', ()=>{ usersState.page++; renderUsersList(users); });
+
   $all('[data-toggleban]').forEach(b=>b.addEventListener('click', async ()=>{
     const newStatus = b.dataset.cur==='banned' ? 'active' : 'banned';
     await db.ref('users/'+b.dataset.toggleban+'/status').set(newStatus);
     toast(newStatus==='banned'?'تم إيقاف الحساب':'تم تفعيل الحساب');
     loadAdminUsers();
   }));
+  $all('[data-changerole]').forEach(b=>b.addEventListener('click', ()=>changeUserRole(b.dataset.changerole, users[b.dataset.changerole])));
+  $all('[data-reassign]').forEach(b=>b.addEventListener('click', ()=>openReassignTeacherModal(b.dataset.reassign, users[b.dataset.reassign])));
+  $all('[data-resetpass]').forEach(b=>b.addEventListener('click', ()=>resetUserPassword(users[b.dataset.resetpass])));
+  $all('[data-forcelogout]').forEach(b=>b.addEventListener('click', ()=>forceLogoutUser(b.dataset.forcelogout)));
+  $all('[data-deleteuser]').forEach(b=>b.addEventListener('click', ()=>deleteUserCompletely(b.dataset.deleteuser, users[b.dataset.deleteuser])));
+}
+// تحويل دور المستخدم — بيفك أي ربط طالب/معلمة قديم تلقائيًا عشان منسيبش بيانات معلّقة
+async function changeUserRole(uid, u){
+  if(!u) return;
+  const newRole = u.role==='teacher' ? 'student' : 'teacher';
+  if(!confirm(`تحويل "${u.name}" إلى ${newRole==='teacher'?'معلمة':'طالب'}؟ سيتم فك أي ربط تدريس/متابعة سابق.`)) return;
+  try{
+    const updates = {}; updates['users/'+uid+'/role'] = newRole;
+    if(u.role==='teacher'){
+      const aSnap = await db.ref('assignments/'+uid).get();
+      const myStudents = Object.keys(aSnap.val()||{});
+      updates['assignments/'+uid] = null;
+      for(const sid of myStudents){
+        const stSnap = await db.ref('studentTeacher/'+sid).get();
+        if(stSnap.val()===uid) updates['studentTeacher/'+sid] = null;
+      }
+    } else if(u.role==='student'){
+      const stSnap = await db.ref('studentTeacher/'+uid).get();
+      const myTeacher = stSnap.val();
+      if(myTeacher) updates['assignments/'+myTeacher+'/'+uid] = null;
+      updates['studentTeacher/'+uid] = null;
+    }
+    await db.ref().update(updates);
+    toast('تم تحويل الدور');
+    await loadAdminUsers();
+  }catch(e){ toast('تعذر تحويل الدور: '+(e.message||'')); }
+}
+// نقل طالب لمعلمة أخرى (بديل سريع لتبويب "الربط" الكامل، من نفس شاشة المستخدمين)
+function openReassignTeacherModal(studentUid, student){
+  if(!student) return;
+  db.ref('users').get().then(snap=>{
+    const users = snap.val()||{};
+    const teachers = Object.entries(users).filter(([,u])=>u.role==='teacher');
+    showModal(`
+      <h3>نقل "${esc(student.name)}" لمعلمة أخرى</h3>
+      <div class="field"><label>اختر المعلمة</label>
+        <select id="reassignTeacherSelect">
+          <option value="">— بدون معلمة —</option>
+          ${teachers.map(([id,t])=>`<option value="${id}">${esc(t.name)}</option>`).join('')}
+        </select>
+      </div>
+      <button class="btn" id="btnConfirmReassign">تأكيد النقل</button>`);
+    db.ref('studentTeacher/'+studentUid).get().then(cur=>{
+      const sel = $('#reassignTeacherSelect');
+      if(sel && cur.val()) sel.value = cur.val();
+    });
+    $('#btnConfirmReassign').addEventListener('click', async ()=>{
+      const newTeacher = $('#reassignTeacherSelect').value;
+      const btn = $('#btnConfirmReassign'); btn.disabled = true;
+      try{
+        const curSnap = await db.ref('studentTeacher/'+studentUid).get();
+        const prevT = curSnap.val();
+        const updates = {};
+        if(prevT) updates['assignments/'+prevT+'/'+studentUid] = null;
+        if(newTeacher){ updates['assignments/'+newTeacher+'/'+studentUid] = true; updates['studentTeacher/'+studentUid] = newTeacher; }
+        else { updates['studentTeacher/'+studentUid] = null; }
+        await db.ref().update(updates);
+        hideModal(); toast('تم تحديث الربط'); await loadAdminUsers();
+      }catch(e){ toast('تعذر النقل: '+(e.message||'')); btn.disabled=false; }
+    });
+  });
+}
+// إعادة تعيين كلمة المرور: بيرسل رابط Firebase القياسي لبريد الحساب الداخلي (username@rawasekh.app).
+// ملاحظة مهمة: طالما الحسابات بتستخدم بريد داخلي وهمي (مش بريد حقيقي للمستخدم)، الرابط ده
+// هيتبعت لصندوق بريد مالوش صاحب فعليًا. تفعيل إعادة تعيين حقيقية للمستخدم يحتاج إما بريد
+// استرجاع حقيقي مخزّن في الملف الشخصي، أو Cloud Function بصلاحيات Admin SDK لتغيير كلمة
+// المرور مباشرة (التطبيق ده ملف واحد بدون سيرفر فمفيش وصول لـ Admin SDK من هنا).
+async function resetUserPassword(u){
+  if(!u || !u.username){ toast('لا يوجد اسم مستخدم لهذا الحساب'); return; }
+  if(!confirm('سيتم إرسال رابط إعادة تعيين كلمة المرور القياسي من Firebase. تنبيه: الحسابات هنا تستخدم بريدًا داخليًا وهميًا، فهذا الرابط لن يصل لصندوق بريد حقيقي للمستخدم إلا لو تم ربط بريد استرجاع حقيقي لاحقًا. متابعة؟')) return;
+  try{ await auth.sendPasswordResetEmail(usernameToEmail(u.username)); toast('تم إرسال طلب إعادة التعيين لبريد الحساب الداخلي'); }
+  catch(e){ toast('تعذر الإرسال: '+(e.message||'')); }
+}
+// إجبار تسجيل الخروج: بيسجّل وقت الأمر في users/{uid}/forceLogoutAt، والمستمع الدائم على
+// بروفايل المستخدم (auth.onAuthStateChanged) بيقارنه بلحظة بداية جلسته الحالية ويسجّل خروجه
+// فورًا لو الأمر أحدث من دخوله — بيشتغل بمجرد ما يوصل التحديث Realtime، من غير أي تحديث يدوي للصفحة.
+async function forceLogoutUser(uid){
+  if(!confirm('إجبار هذا المستخدم على تسجيل الخروج الآن؟')) return;
+  try{ await db.ref('users/'+uid).update({forceLogoutAt: firebase.database.ServerValue.TIMESTAMP}); toast('تم إرسال أمر تسجيل الخروج'); }
+  catch(e){ toast('تعذر التنفيذ: '+(e.message||'')); }
+}
+// حذف مستخدم بالكامل: البروفايل، اسم المستخدم المحجوز، الحضور، التقدم، روابط التدريس/المتابعة،
+// محادثاته ومكالماته مع الطرف المرتبط به (ملفات الشات المرفوعة كمان تتحذف من Storage قبل حذف الثريد).
+// ملاحظة مهمة: العميل (Client SDK) مينفعش يحذف حساب مستخدم *تاني* من Firebase Authentication —
+// ده متاح بس للمستخدم يحذف حساب نفسه، أو عبر Admin SDK من سيرفر/Cloud Function. الحذف هنا بيمسح
+// كل بيانات الحساب فعليًا ويمنعه نهائيًا من الوصول لأي شيء في التطبيق، لكن سجل الدخول (Email/Password)
+// هيفضل موجود في Firebase Authentication نفسه حتى تضيفوا Cloud Function لحذفه من هناك كمان.
+async function deleteUserCompletely(uid, u){
+  if(!u) return;
+  if(!confirm(`سيتم حذف حساب "${u.name}" وكل بياناته (محادثات، مكالمات، ${u.role==='teacher'?'روابط طلابه':'تقدمه وربطه بمعلمته'}) نهائيًا. لا يمكن التراجع.\n\nملاحظة: هذا لا يحذف الحساب من Firebase Authentication نفسه (يتطلب Cloud Function من السيرفر)، لكنه سيُقفل نهائيًا وتُمسح كل بياناته.\n\nمتابعة؟`)) return;
+  try{
+    const updates = {};
+    updates['users/'+uid] = null;
+    updates['presence/'+uid] = null;
+    updates['progress/'+uid] = null;
+    if(u.username) updates['usernames/'+u.username] = null;
+
+    let peers = [];
+    if(u.role==='teacher'){
+      const aSnap = await db.ref('assignments/'+uid).get();
+      const myStudents = Object.keys(aSnap.val()||{});
+      peers = myStudents;
+      updates['assignments/'+uid] = null;
+      for(const sid of myStudents){
+        const stSnap = await db.ref('studentTeacher/'+sid).get();
+        if(stSnap.val()===uid) updates['studentTeacher/'+sid] = null;
+      }
+    } else if(u.role==='student'){
+      const stSnap = await db.ref('studentTeacher/'+uid).get();
+      const myTeacher = stSnap.val();
+      if(myTeacher){ peers = [myTeacher]; updates['assignments/'+myTeacher+'/'+uid] = null; }
+      updates['studentTeacher/'+uid] = null;
+    }
+
+    for(const peer of peers){
+      const chatId = pairId(uid, peer);
+      try{
+        const msgsSnap = await db.ref('chatThreads/'+chatId+'/messages').get();
+        const msgs = msgsSnap.val()||{};
+        await Promise.all(Object.values(msgs).map(async m=>{
+          if((m.type==='image'||m.type==='file') && m.url){
+            try{ await storage.refFromURL(m.url).delete(); }catch(_){ /* أفضل محاولة فقط — لو الملف مش موجود أو الصلاحية مرفوضة، نكمل */ }
+          }
+        }));
+      }catch(_){}
+      updates['chatThreads/'+chatId] = null;
+      updates['calls/'+chatId] = null;
+    }
+
+    await db.ref().update(updates);
+    toast('تم حذف الحساب وكل بياناته');
+    await loadAdminUsers();
+  }catch(e){ toast('تعذر حذف الحساب بالكامل: '+(e.message||'')); }
 }
 
 function tplAdminAssign(){
@@ -1117,8 +1715,13 @@ function bindStudentViewEvents(){
 function tplStudentHome(){
   return `<div id="studentHomeArea"><div class="empty-state">جارِ التحميل...</div></div>`;
 }
+// عيب #11 (مُصلَح): الكاش القديم كان "if(myTeacherCache) return" — أي لما
+// يُحدَّد مرة يفضل محفوظ طول الجلسة بدون تحديث، وده سبب مشكلتين: (1) لو
+// الأدمن غيّر معلمة الطالب وهو فاتح التطبيق، الصفحة كانت تفضل تجيب المعلمة
+// القديمة. (2) كان بيتسرب بين الحسابات المختلفة في نفس المتصفح. دلوقتي
+// بنجيب القيمة بشكل مباشر من فايربيس في كل مرة (قراءة واحدة خفيفة)،
+// والتحديث اللحظي الحقيقي بقى مسؤولية watchMyTeacher() تحت.
 async function findMyTeacher(){
-  if(myTeacherCache) return myTeacherCache;
   const snap = await db.ref('studentTeacher/'+state.user.uid).get();
   myTeacherCache = snap.val() || null;
   return myTeacherCache;
@@ -1345,39 +1948,68 @@ async function startCall(otherUid, otherName){
     await db.ref('calls/'+callId).set({ from: state.user.uid, to: otherUid, status:'ringing', channel, ts: firebase.database.ServerValue.TIMESTAMP });
   }catch(e){ toast('تعذر بدء المكالمة'); return; }
   openCallOverlay({uid:otherUid, name:otherName}, 'outgoing', callId, channel);
-  const stopWatcher = db.ref('calls/'+callId).on('value', snap=>{
+  const callRef = db.ref('calls/'+callId);
+  const cb = snap=>{
     const c = snap.val();
     if(!c) return;
     if(c.status==='rejected'){ toast(otherName+' رفض/ت المكالمة'); endCallUI(callId); }
     if(c.status==='accepted'){ joinAgoraChannel(channel); }
     if(c.status==='ended'){ endCallUI(callId); }
-  });
+  };
+  callRef.on('value', cb);
+  state._activeCallSessionWatcher = {callId, ref: callRef, cb};
+}
+
+// عيب #11 (مُصلَح): كانت قائمة "المكالمات الواردة" بتتبني مرة واحدة بس لحظة
+// تسجيل الدخول (get() وحيدة). لو الأدمن غيّر ربط الطالب بمعلمة تانية والطالب
+// فاتح التطبيق فعلاً، مكنش هيستقبل أي مكالمة من المعلمة الجديدة إلا بعد
+// Refresh كامل للصفحة. دلوقتي بقى في مستمع Realtime دائم على studentTeacher/
+// (للطالب) أو assignments/ (للمعلمة)، وأي تغيير فيهم يعيد بناء مستمعي
+// المكالمات فورًا بدون أي تحديث للصفحة.
+let callPeerWatchRef = null;
+function teardownCallPeerWatch(){
+  if(callPeerWatchRef){ callPeerWatchRef.ref.off('value', callPeerWatchRef.cb); callPeerWatchRef=null; }
 }
 function listenIncomingCalls(){
+  teardownCallPeerWatch();
+  const myUid = state.user.uid;
+  if(state.profile.role==='student'){
+    const ref = db.ref('studentTeacher/'+myUid);
+    const cb = snap=>{ myTeacherCache = snap.val()||null; setupCallListenersForPeers(myTeacherCache ? [myTeacherCache] : []); };
+    ref.on('value', cb);
+    callPeerWatchRef = {ref, cb};
+  } else if(state.profile.role==='teacher'){
+    const ref = db.ref('assignments/'+myUid);
+    const cb = snap=>{ setupCallListenersForPeers(Object.keys(snap.val()||{})); };
+    ref.on('value', cb);
+    callPeerWatchRef = {ref, cb};
+  } else {
+    setupCallListenersForPeers([]);
+  }
+}
+function setupCallListenersForPeers(peers){
   teardownCallListener();
-  (async ()=>{
-    const myUid = state.user.uid;
-    let peers = [];
-    if(state.profile.role==='student'){
-      const tid = await findMyTeacher();
-      if(tid) peers=[tid];
-    } else if(state.profile.role==='teacher'){
-      const snap = await db.ref('assignments/'+myUid).get();
-      peers = Object.keys(snap.val()||{});
-    }
-    state._callListeners = state._callListeners || [];
-    peers.forEach(peerUid=>{
-      const callId = pairId(myUid, peerUid);
-      const ref = db.ref('calls/'+callId);
-      const cb = snap=>{
-        const c = snap.val();
-        if(c && c.status==='ringing' && c.to===myUid){ showIncomingBanner(peerUid, callId, c.channel); }
-        if(c && (c.status==='ended'||c.status==='rejected') ){ hideIncomingBanner(); }
-      };
-      ref.on('value', cb);
-      state._callListeners.push({ref, cb});
-    });
-  })();
+  const myUid = state.user.uid;
+  state._callListeners = state._callListeners || [];
+  peers.forEach(peerUid=>{
+    const callId = pairId(myUid, peerUid);
+    const ref = db.ref('calls/'+callId);
+    const cb = snap=>{
+      const c = snap.val();
+      if(!c) return;
+      if(c.status==='ringing' && c.to===myUid){ showIncomingBanner(peerUid, callId, c.channel); }
+      if(c.status==='ended' || c.status==='rejected'){
+        hideIncomingBanner();
+        // عيب مُصلَح (تسريب موارد/Memory Leak): الطرف اللي مقفلّوش المكالمة بنفسه
+        // (يعني مش اللي دوس على "إنهاء") كان مستمعه القديم بيعمل فقط hideIncomingBanner()
+        // من غير ما يقفل شاشة المكالمة أو يسيب الـ Agora channel أو يوقف الميكروفون —
+        // فتفضل شاشة "المكالمة جارية" عالقة والموارد شغالة في الخلفية عند الطرف التاني.
+        if(state.currentCallId===callId){ endCallUI(callId); }
+      }
+    };
+    ref.on('value', cb);
+    state._callListeners.push({ref, cb});
+  });
 }
 function teardownCallListener(){
   (state._callListeners||[]).forEach(({ref,cb})=>ref.off('value',cb));
@@ -1455,7 +2087,13 @@ async function endCallUI(callId){
   clearInterval(state.callTimerInt); state.callTimerInt=null;
   if(state.localAudioTrack){ state.localAudioTrack.close(); state.localAudioTrack=null; }
   if(state.agoraClient){ try{ await state.agoraClient.leave(); }catch(e){} state.agoraClient=null; }
-  db.ref('calls/'+callId).off();
+  // كان قبل كده: db.ref('calls/'+callId).off() بدون تحديد — وده يشيل *كل*
+  // المستمعين على المسار ده، بما فيهم مستمع "المكالمات الواردة" الدائم.
+  // دلوقتي بنشيل فقط مستمع الجلسة المؤقتة اللي عملها startCall (لو موجود لنفس الـ callId).
+  if(state._activeCallSessionWatcher && state._activeCallSessionWatcher.callId===callId){
+    state._activeCallSessionWatcher.ref.off('value', state._activeCallSessionWatcher.cb);
+    state._activeCallSessionWatcher = null;
+  }
   state.currentCallId = null;
 }
 
