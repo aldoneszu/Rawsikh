@@ -311,6 +311,7 @@ a{color:inherit; text-decoration:none;}
 .admin-chat-subtitle{color:var(--warn) !important; font-weight:600;}
 .admin-del-tag{margin-top:6px; font-size:11px; opacity:.8; background:rgba(0,0,0,.08); border-radius:8px; padding:4px 8px;}
 [data-theme="dark"] .admin-del-tag{background:rgba(255,255,255,.08);}
+.admin-sender-tag{margin-bottom:4px; font-size:11.5px; font-weight:700; color:var(--accent);}
 
 /* =====[ SECTION: CALL UI ]===== */
 .call-overlay{
@@ -1731,7 +1732,9 @@ async function loadAdminChats(){
       const participants = findParticipantsForChatId(chatId, knownUids);
       const nameA = participants ? (users[participants[0]]?.name || 'مستخدم محذوف') : 'غير معروف';
       const nameB = participants ? (users[participants[1]]?.name || 'مستخدم محذوف') : 'غير معروف';
-      return { chatId, nameA, nameB, count: msgs.length, lastTs: lastMsg ? (lastMsg.ts||0) : 0 };
+      // خريطة uid → اسم، عشان نقدر نبيّن جنب كل رسالة هي مبعوتة من مين بالظبط
+      const namesMap = participants ? { [participants[0]]: nameA, [participants[1]]: nameB } : {};
+      return { chatId, nameA, nameB, count: msgs.length, lastTs: lastMsg ? (lastMsg.ts||0) : 0, namesMap };
     }).sort((a,b)=> b.lastTs - a.lastTs);
     renderAdminChatsList(adminChatsCache);
     $('#adminChatsSearch').addEventListener('input', e=>{
@@ -1753,12 +1756,13 @@ function renderAdminChatsList(rows){
   $all('.list-item[data-chat-id]', listEl).forEach(el=>{
     el.addEventListener('click', ()=>{
       const row = rows.find(r=>r.chatId===el.dataset.chatId);
-      if(row) openAdminChatView(row.chatId, row.nameA+' ↔ '+row.nameB);
+      if(row) openAdminChatView(row.chatId, row.nameA+' ↔ '+row.nameB, row.namesMap);
     });
   });
 }
-let adminChatViewRef = null, adminChatViewCb = null;
-function openAdminChatView(chatId, title){
+let adminChatViewRef = null, adminChatViewCb = null, adminChatNamesMap = {};
+function openAdminChatView(chatId, title, namesMap){
+  adminChatNamesMap = namesMap || {};
   $('#adminChatTitle').textContent = title;
   $('#adminChatBody').innerHTML = '<div class="bubble system">جارِ تحميل المحادثة...</div>';
   $('#adminChatOverlay').classList.add('active');
@@ -1770,7 +1774,7 @@ function openAdminChatView(chatId, title){
     const body = $('#adminChatBody');
     if(!body) return;
     const entries = Object.entries(msgs).sort((a,b)=>(a[1].ts||0)-(b[1].ts||0));
-    body.innerHTML = entries.map(([id,m])=> renderAdminChatBubble(m)).join('') || `<div class="bubble system">لا توجد رسائل في هذه المحادثة</div>`;
+    body.innerHTML = entries.map(([id,m])=> renderAdminChatBubble(m, adminChatNamesMap)).join('') || `<div class="bubble system">لا توجد رسائل في هذه المحادثة</div>`;
     body.scrollTop = body.scrollHeight;
   };
   adminChatViewRef.on('value', adminChatViewCb);
@@ -1781,23 +1785,28 @@ function closeAdminChatView(fromBack){
   if(!fromBack) popNavIfMatches('adminChatView');
 }
 // نسخة عرض فقط، من غير أي إمكانية حذف/رد، وبتوضّح حالة الحذف بدل ما تخفي المحتوى
-function renderAdminChatBubble(m){
+function renderAdminChatBubble(m, namesMap){
   const deletedTag = m.deleted ? `<div class="admin-del-tag">🗑️ حذفها المرسل لدى الجميع — ظاهرة هنا للأدمن بس</div>` : '';
   const hiddenForTag = (m.deletedFor && Object.keys(m.deletedFor).length) ? `<div class="admin-del-tag">🙈 حذفها أحد الطرفين عنده فقط — ظاهرة هنا للأدمن بس</div>` : '';
+  // اسم المرسل الحقيقي (مش "them" ثابتة)، عشان الأدمن يعرف كل رسالة مبعوتة من مين بالظبط
+  const senderName = (namesMap && namesMap[m.senderUid]) || 'مستخدم غير معروف';
+  const senderTag = `<div class="admin-sender-tag">✍️ ${esc(senderName)}</div>`;
   if(m.type==='image'){
     return `<div class="bubble media them">
+      ${senderTag}
       <div class="chat-img-wrap"><img class="chat-img" src="${esc(m.url||'')}" loading="lazy"><div class="meta">${fmtTime(m.ts)}</div></div>
       ${deletedTag}${hiddenForTag}
     </div>`;
   }
   if(m.type==='file'){
     return `<div class="bubble file-bubble them">
+      ${senderTag}
       <div class="file-ic">📄</div>
       <div class="file-info"><b>${esc(m.fileName||'ملف')}</b><span>${fmtBytes(m.fileSize||0)}</span></div>
       ${deletedTag}${hiddenForTag}
     </div>`;
   }
-  return `<div class="bubble them">${esc(m.text||'')}<div class="meta">${fmtTime(m.ts)}</div>${deletedTag}${hiddenForTag}</div>`;
+  return `<div class="bubble them">${senderTag}${esc(m.text||'')}<div class="meta">${fmtTime(m.ts)}</div>${deletedTag}${hiddenForTag}</div>`;
 }
 
 /* =====[ SECTION: TEACHER PANEL ]===== */
