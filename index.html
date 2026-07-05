@@ -420,9 +420,11 @@ const FIREBASE_CONFIG = {
   appId: "1:310036534754:android:ba27e270c322f0164e15bb"
 };
 
-const AGORA_APP_ID = "0d60209ff93e4aa196f1ba79151ab296";
-// ملحوظة: الوضع دلوقتي "App ID فقط" (بدون Token) — لازم يتلغى الـ App Certificate من Agora Console
-// من: https://console.agora.io -> مشروعك -> Authentication -> اختار "App ID" بس (مش "App ID + Token")
+const AGORA_APP_ID = "2687ea67475f48c8acaa8fa64b9fe843";
+// بعد تفعيل التوكنات: الوضع بقى "App ID + Token" من Agora Console (مش "App ID" بس)
+// TOKEN_SERVER_URL: حط هنا رابط الـ Vercel اللي هتاخده بعد نشر فولدر agora-token-server
+// مثال: "https://agora-token-server-xxxx.vercel.app/api/agora-token"
+const TOKEN_SERVER_URL = "https://mahmoudgamalghanim--898ce504785811f1af0e1607ee4eb77e.web.val.run";
 
 // رفع الصور/الملفات في الشات بقى عن طريق Cloudinary (مجاني بالكامل، من غير أي كارت بنكي)
 // بدل Firebase Storage اللي بقى محتاج خطة Blaze (مدفوعة). عشان تشغّلها:
@@ -2322,8 +2324,11 @@ function hashUidToNumber(uid){
   let h = 0; for(let i=0;i<uid.length;i++){ h = (h*31 + uid.charCodeAt(i)) >>> 0; }
   return (h % 2147483000) + 1;
 }
-// App ID فقط: بدون توكن، لازم يتلغى App Certificate من Agora Console (Authentication -> App ID)
+// بقى في توكن حقيقي بيتجاب من TOKEN_SERVER_URL قبل أي join (شوف fetchAgoraToken تحت)
 async function startCall(otherUid, otherName){
+  // منع بدء مكالمة جديدة وانت أصلاً في مكالمة تانية شغالة — عشان مكالمتين
+  // متتصادمش مع بعض على نفس الـ Agora client/الميكروفون بتاع الجهاز.
+  if(state.currentCallId){ toast('انت بالفعل في مكالمة، أنهيها الأول'); return; }
   const callId = pairId(state.user.uid, otherUid);
   const channel = 'channel_'+callId;
   try{
@@ -2379,7 +2384,13 @@ function setupCallListenersForPeers(peers){
     const cb = snap=>{
       const c = snap.val();
       if(!c) return;
-      if(c.status==='ringing' && c.to===myUid){ showIncomingBanner(peerUid, callId, c.channel); }
+      if(c.status==='ringing' && c.to===myUid){
+        // لو أنا أصلاً في مكالمة شغالة (مع أي شخص تاني)، ارفض المكالمة الجديدة
+        // تلقائيًا فورًا بدل ما أعرض بانر فوقها — عشان مكالمتين ميتقابلوش خالص
+        // على نفس جلسة Agora وميأثروش على بعض.
+        if(state.currentCallId && state.currentCallId!==callId){ ref.update({status:'rejected'}); return; }
+        showIncomingBanner(peerUid, callId, c.channel);
+      }
       if(c.status==='ended' || c.status==='rejected'){
         hideIncomingBanner();
         // عيب مُصلَح (تسريب موارد/Memory Leak): الطرف اللي مقفلّوش المكالمة بنفسه
@@ -2443,11 +2454,26 @@ function openCallOverlay(peer, mode, callId, channel){
     btn.textContent = muted ? '🔇' : '🎙️';
   };
 }
+// بيجيب توكن دخول من سيرفر التوكنات (Vercel). لازم يتنفذ قبل أي join على Agora
+// بعد ما تفعّل App Certificate، لأن الدخول بـ null بقى مرفوض من Agora.
+async function fetchAgoraToken(channel, numericUid){
+  const url = `${TOKEN_SERVER_URL}?channel=${encodeURIComponent(channel)}&uid=${numericUid}`;
+  const resp = await fetch(url);
+  if(!resp.ok){ throw new Error('token-server-error'); }
+  const data = await resp.json();
+  if(!data.token){ throw new Error('no-token-in-response'); }
+  return data.token;
+}
 async function joinAgoraChannel(channel){
   try{
+    // تنظيف احترازي: لو فيه أي جلسة Agora قديمة عالقة (نادر جدًا)، اقفلها الأول
+    // قبل ما تبدأ الجلسة الجديدة، عشان الصوت/الاتصال القديم مايتلخبطش مع الجديد.
+    if(state.agoraClient){ try{ await state.agoraClient.leave(); }catch(_){} state.agoraClient=null; }
+    if(state.localAudioTrack){ try{ state.localAudioTrack.close(); }catch(_){} state.localAudioTrack=null; }
     const numericUid = hashUidToNumber(state.user.uid);
+    const agoraToken = await fetchAgoraToken(channel, numericUid);
     state.agoraClient = AgoraRTC.createClient({mode:'rtc', codec:'vp8'});
-    await state.agoraClient.join(AGORA_APP_ID, channel, null, numericUid);
+    await state.agoraClient.join(AGORA_APP_ID, channel, agoraToken, numericUid);
     state.localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack();
     await state.agoraClient.publish([state.localAudioTrack]);
     state.agoraClient.on('user-published', async (user, mediaType)=>{
@@ -2460,7 +2486,7 @@ async function joinAgoraChannel(channel){
     state.callTimerInt = setInterval(()=>{ state.callSeconds++; const el=$('#callTimerText'); if(el) el.textContent=fmtDuration(state.callSeconds); }, 1000);
   }catch(e){
     console.error(e);
-    toast('تعذر الدخول على المكالمة — تأكد إن App Certificate ملغي من Agora Console');
+    toast('تعذر الدخول على المكالمة — تأكد إن سيرفر التوكن شغال وإن App Certificate مفعّل من Agora Console');
   }
 }
 async function endCallUI(callId){
