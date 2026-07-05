@@ -888,12 +888,23 @@ function showLoadError(containerId, e){
   if(el) el.innerHTML = `<div class="empty-state"><span class="emoji">⚠️</span>تعذر تحميل البيانات<br><span style="font-size:11px;direction:ltr;display:inline-block;margin-top:6px">${esc(e && e.message || e)}</span></div>`;
   console.error(e);
 }
+// بترجع { snap } لو نجحت القراءة، أو { error: 'اسم المسار: رسالة الخطأ' } لو اترفضت —
+// عشان لو حصل Permission Denied، نعرف بالظبط أي مسار هو من غير ما نحتاج نفتح Console
+async function safeGet(path, ref){
+  try{ return { snap: await ref.get() }; }
+  catch(e){ return { error: path+': '+(e && e.message || e) }; }
+}
 async function loadAdminStats(){
   try{
-  const [usersSnap, codesSnap, alertsSnap, presenceSnap, progressSnap, assignSnap, callsSnap] = await Promise.all([
-    db.ref('users').get(), db.ref('codes').get(), db.ref('security_alerts').limitToLast(5).get(),
-    db.ref('presence').get(), db.ref('progress').get(), db.ref('assignments').get(), db.ref('calls').get()
+  const results = await Promise.all([
+    safeGet('users', db.ref('users')), safeGet('codes', db.ref('codes')),
+    safeGet('security_alerts', db.ref('security_alerts').limitToLast(5)),
+    safeGet('presence', db.ref('presence')), safeGet('progress', db.ref('progress')),
+    safeGet('assignments', db.ref('assignments')), safeGet('calls', db.ref('calls'))
   ]);
+  const failed = results.filter(r=>r.error).map(r=>r.error);
+  if(failed.length){ throw new Error(failed.join(' | ')); }
+  const [usersSnap, codesSnap, alertsSnap, presenceSnap, progressSnap, assignSnap, callsSnap] = results.map(r=>r.snap);
   const users = usersSnap.val()||{};
   const presence = presenceSnap.val()||{};
   const progress = progressSnap.val()||{};
