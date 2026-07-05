@@ -304,6 +304,14 @@ a{color:inherit; text-decoration:none;}
 .img-viewer img{max-width:100%; max-height:100%; border-radius:8px;}
 .img-viewer .close-viewer{position:absolute; top:18px; left:18px; width:40px; height:40px; border-radius:50%; background:rgba(255,255,255,.15); color:#fff; border:none; font-size:18px;}
 
+/* =====[ SECTION: ADMIN CHAT VIEWER (عرض للمراجعة فقط) ]===== */
+.admin-chat-overlay{position:fixed; inset:0; z-index:350; background:var(--bg); display:none; flex-direction:column; height:100vh;}
+@supports (height: 100dvh){ .admin-chat-overlay{height:100dvh;} }
+.admin-chat-overlay.active{display:flex;}
+.admin-chat-subtitle{color:var(--warn) !important; font-weight:600;}
+.admin-del-tag{margin-top:6px; font-size:11px; opacity:.8; background:rgba(0,0,0,.08); border-radius:8px; padding:4px 8px;}
+[data-theme="dark"] .admin-del-tag{background:rgba(255,255,255,.08);}
+
 /* =====[ SECTION: CALL UI ]===== */
 .call-overlay{
   position:fixed; inset:0; z-index:300; background:linear-gradient(180deg,var(--emerald-950),var(--emerald-900));
@@ -391,6 +399,13 @@ a{color:inherit; text-decoration:none;}
 <div class="call-overlay" id="callOverlay"></div>
 <div class="modal-bg" id="modalBg"><div class="modal-sheet" id="modalSheet"></div></div>
 <div class="img-viewer" id="imgViewer"><button class="close-viewer" id="btnCloseViewer">✕</button><img id="imgViewerImg" src="" alt=""></div>
+<div class="admin-chat-overlay" id="adminChatOverlay">
+  <div class="chat-header">
+    <button class="icon-btn back-btn" id="btnCloseAdminChat">➜</button>
+    <div class="li-body"><b id="adminChatTitle">—</b><span class="admin-chat-subtitle">عرض الأدمن — للمراجعة فقط، بدون حذف</span></div>
+  </div>
+  <div class="chat-body" id="adminChatBody"></div>
+</div>
 
 <script>
 /* =====[ SECTION: CONFIG — عدّل هنا فقط ]===== */
@@ -522,6 +537,7 @@ window.addEventListener('popstate', ()=>{
     if(type==='imgViewer') closeImgViewer(true);
     else if(type==='modal') hideModal(true);
     else if(type==='chat') closeChat(true);
+    else if(type==='adminChatView') closeAdminChatView(true);
     return;
   }
   // مفيش طبقة مفتوحة — المستخدم واقف على شاشة رئيسية وبيحاول يخرج بالكامل.
@@ -540,6 +556,7 @@ function hideModal(fromBack){ $('#modalBg').classList.remove('active'); if(!from
 document.addEventListener('DOMContentLoaded', ()=>{
   $('#modalBg').addEventListener('click', e=>{ if(e.target.id==='modalBg') hideModal(); });
   $('#imgViewer').addEventListener('click', e=>{ if(e.target.id==='imgViewer'||e.target.id==='btnCloseViewer') closeImgViewer(); });
+  $('#btnCloseAdminChat').addEventListener('click', ()=> closeAdminChatView());
 });
 function openImgViewer(url){ $('#imgViewerImg').src = url; $('#imgViewer').classList.add('active'); pushNav('imgViewer'); }
 function closeImgViewer(fromBack){ $('#imgViewer').classList.remove('active'); $('#imgViewerImg').src=''; if(!fromBack) popNavIfMatches('imgViewer'); }
@@ -847,6 +864,9 @@ function resetLocalState(){
   regRole = null;
   usersFilter = 'all';
   usersState = { search:'', sort:'newest', page:1 };
+  // تفكيك مستمع شاشة مراجعة شات الأدمن (لو كانت مفتوحة) عشان مايفضلش شغال في الخلفية بعد الخروج
+  if(adminChatViewRef){ adminChatViewRef.off('value', adminChatViewCb); adminChatViewRef=null; adminChatViewCb=null; }
+  $('#adminChatOverlay')?.classList.remove('active');
   stopTrialWatch();
 }
 
@@ -937,7 +957,7 @@ function setupPresence(){
 function logout(){ auth.signOut(); }
 
 /* =====[ SECTION: ADMIN PANEL ]===== */
-let adminView = loadNavTab('admin', 'dashboard');
+let adminView = 'dashboard';
 // حالة لوحة المفاتيح: بحث/فلاتر/ترتيب/صفحات/تحديد جماعي
 let keysState = { search:'', status:'all', type:'all', sort:'newest', page:1, selected:new Set() };
 const KEYS_PAGE_SIZE = 12;
@@ -957,6 +977,7 @@ function screenAdminShell(){
       <button data-v="users" class="${adminView==='users'?'active':''}"><span class="ic">👥</span>المستخدمين</button>
       <button data-v="assign" class="${adminView==='assign'?'active':''}"><span class="ic">🔗</span>الربط</button>
       <button data-v="reports" class="${adminView==='reports'?'active':''}"><span class="ic">🚩</span>البلاغات</button>
+      <button data-v="chats" class="${adminView==='chats'?'active':''}"><span class="ic">💬</span>المحادثات</button>
     </div>
   </div>`;
 }
@@ -966,6 +987,7 @@ function adminViewHtml(){
   if(adminView==='users') return tplAdminUsers();
   if(adminView==='assign') return tplAdminAssign();
   if(adminView==='reports') return tplAdminReports();
+  if(adminView==='chats') return tplAdminChats();
   return '';
 }
 function bindAdminEvents(){
@@ -981,6 +1003,7 @@ function bindAdminViewEvents(){
   if(adminView==='users'){ loadAdminUsers(); }
   if(adminView==='assign'){ loadAdminAssign(); }
   if(adminView==='reports'){ loadAdminReports(); }
+  if(adminView==='chats'){ loadAdminChats(); }
 }
 
 function tplAdminDashboard(){
@@ -1674,8 +1697,111 @@ async function loadAdminReports(){
   }catch(e){ showLoadError('reportsList', e); showLoadError('secAlertsList', e); }
 }
 
+/* =====[ SECTION: ADMIN — مراجعة كل المحادثات ]=====
+   ميزة جديدة: الأدمن يقدر يشوف أي محادثة بين معلمة وطالب/ة كاملة، وحتى لو
+   الطرفين حذفوا رسائل بينهم (عندهم فقط أو لدى الجميع)، المحتوى الأصلي بيفضل
+   ظاهر بالكامل عند الأدمن هنا — الحذف بتاع الطرفين شكل واجهة بس عندهم، ومحصلش
+   فعليًا مسح للمحتوى من قاعدة البيانات (أنظر deleteMessage). */
+function tplAdminChats(){
+  return `<div class="field"><input id="adminChatsSearch" placeholder="بحث بالاسم..."></div>
+  <div id="adminChatsList"><div class="empty-state">جارِ التحميل...</div></div>`;
+}
+// chatId عبارة عن pairId(uidA,uidB) = [a,b].sort().join('_')؛ عشان نستخرج
+// الاتنين تاني من غير أي افتراض عن شكل الـ uid، بنجرب كل uid معروف من users/
+// كبداية محتملة للـ chatId ونتحقق إن pairId بتاعه بيطابق الـ chatId فعليًا.
+function findParticipantsForChatId(chatId, knownUids){
+  for(const uid of knownUids){
+    if(chatId.startsWith(uid+'_')){
+      const other = chatId.slice(uid.length+1);
+      if(other && pairId(uid, other)===chatId) return [uid, other];
+    }
+  }
+  return null;
+}
+let adminChatsCache = [];
+async function loadAdminChats(){
+  try{
+    const [usersSnap, chatsSnap] = await Promise.all([db.ref('users').get(), db.ref('chatThreads').get()]);
+    const users = usersSnap.val()||{};
+    const knownUids = Object.keys(users);
+    const chats = chatsSnap.val()||{};
+    adminChatsCache = Object.entries(chats).map(([chatId, thread])=>{
+      const msgs = Object.entries(thread.messages||{});
+      const lastMsg = msgs.map(([,m])=>m).sort((a,b)=>(b.ts||0)-(a.ts||0))[0];
+      const participants = findParticipantsForChatId(chatId, knownUids);
+      const nameA = participants ? (users[participants[0]]?.name || 'مستخدم محذوف') : 'غير معروف';
+      const nameB = participants ? (users[participants[1]]?.name || 'مستخدم محذوف') : 'غير معروف';
+      return { chatId, nameA, nameB, count: msgs.length, lastTs: lastMsg ? (lastMsg.ts||0) : 0 };
+    }).sort((a,b)=> b.lastTs - a.lastTs);
+    renderAdminChatsList(adminChatsCache);
+    $('#adminChatsSearch').addEventListener('input', e=>{
+      const q = e.target.value.trim().toLowerCase();
+      const filtered = q ? adminChatsCache.filter(r=> (r.nameA+' '+r.nameB).toLowerCase().includes(q)) : adminChatsCache;
+      renderAdminChatsList(filtered);
+    });
+  }catch(e){ showLoadError('adminChatsList', e); }
+}
+function renderAdminChatsList(rows){
+  const listEl = $('#adminChatsList');
+  if(!listEl) return;
+  if(!rows.length){ listEl.innerHTML = '<div class="empty-state">لا توجد محادثات</div>'; return; }
+  listEl.innerHTML = rows.map(r=>`
+    <div class="list-item" data-chat-id="${esc(r.chatId)}">
+      <div class="avatar">${initials(r.nameA)}</div>
+      <div class="li-body"><b>${esc(r.nameA)} ↔ ${esc(r.nameB)}</b><span>${r.count} رسالة${r.lastTs ? ' · آخر رسالة '+fmtDate(r.lastTs)+' '+fmtTime(r.lastTs) : ''}</span></div>
+    </div>`).join('');
+  $all('.list-item[data-chat-id]', listEl).forEach(el=>{
+    el.addEventListener('click', ()=>{
+      const row = rows.find(r=>r.chatId===el.dataset.chatId);
+      if(row) openAdminChatView(row.chatId, row.nameA+' ↔ '+row.nameB);
+    });
+  });
+}
+let adminChatViewRef = null, adminChatViewCb = null;
+function openAdminChatView(chatId, title){
+  $('#adminChatTitle').textContent = title;
+  $('#adminChatBody').innerHTML = '<div class="bubble system">جارِ تحميل المحادثة...</div>';
+  $('#adminChatOverlay').classList.add('active');
+  pushNav('adminChatView');
+  if(adminChatViewRef) adminChatViewRef.off('value', adminChatViewCb);
+  adminChatViewRef = db.ref('chatThreads/'+chatId+'/messages');
+  adminChatViewCb = snap=>{
+    const msgs = snap.val()||{};
+    const body = $('#adminChatBody');
+    if(!body) return;
+    const entries = Object.entries(msgs).sort((a,b)=>(a[1].ts||0)-(b[1].ts||0));
+    body.innerHTML = entries.map(([id,m])=> renderAdminChatBubble(m)).join('') || `<div class="bubble system">لا توجد رسائل في هذه المحادثة</div>`;
+    body.scrollTop = body.scrollHeight;
+  };
+  adminChatViewRef.on('value', adminChatViewCb);
+}
+function closeAdminChatView(fromBack){
+  if(adminChatViewRef){ adminChatViewRef.off('value', adminChatViewCb); adminChatViewRef=null; adminChatViewCb=null; }
+  $('#adminChatOverlay').classList.remove('active');
+  if(!fromBack) popNavIfMatches('adminChatView');
+}
+// نسخة عرض فقط، من غير أي إمكانية حذف/رد، وبتوضّح حالة الحذف بدل ما تخفي المحتوى
+function renderAdminChatBubble(m){
+  const deletedTag = m.deleted ? `<div class="admin-del-tag">🗑️ حذفها المرسل لدى الجميع — ظاهرة هنا للأدمن بس</div>` : '';
+  const hiddenForTag = (m.deletedFor && Object.keys(m.deletedFor).length) ? `<div class="admin-del-tag">🙈 حذفها أحد الطرفين عنده فقط — ظاهرة هنا للأدمن بس</div>` : '';
+  if(m.type==='image'){
+    return `<div class="bubble media them">
+      <div class="chat-img-wrap"><img class="chat-img" src="${esc(m.url||'')}" loading="lazy"><div class="meta">${fmtTime(m.ts)}</div></div>
+      ${deletedTag}${hiddenForTag}
+    </div>`;
+  }
+  if(m.type==='file'){
+    return `<div class="bubble file-bubble them">
+      <div class="file-ic">📄</div>
+      <div class="file-info"><b>${esc(m.fileName||'ملف')}</b><span>${fmtBytes(m.fileSize||0)}</span></div>
+      ${deletedTag}${hiddenForTag}
+    </div>`;
+  }
+  return `<div class="bubble them">${esc(m.text||'')}<div class="meta">${fmtTime(m.ts)}</div>${deletedTag}${hiddenForTag}</div>`;
+}
+
 /* =====[ SECTION: TEACHER PANEL ]===== */
-let teacherView = (loadNavTab('teacher','students')==='profile') ? 'students' : loadNavTab('teacher','students'); // students | profile | settings
+let teacherView = 'students'; // students | profile | settings
 let teacherActiveStudent = null; // {uid, name}
 function screenTeacherShell(){
   return `
@@ -1820,7 +1946,7 @@ function openDailyLogModal(){
 }
 
 /* =====[ SECTION: STUDENT PANEL ]===== */
-let studentView = loadNavTab('student', 'home'); // home | settings
+let studentView = 'home'; // home | settings
 let myTeacherCache = null;
 function screenStudentShell(){
   return `
@@ -2118,13 +2244,14 @@ function openMsgActionSheet(chatId, msgId, mine){
 async function deleteMessage(chatId, msgId, forEveryone){
   try{
     if(forEveryone){
-      // حذف لدى الجميع: بيستبدل محتوى الرسالة بعلامة "محذوفة" عند الطرفين (زي الواتس)
+      // حذف لدى الجميع: بيعلّم على الرسالة "محذوفة" فبتظهر للطرفين كذلك، لكن المحتوى
+      // الأصلي بيفضل موجود فعليًا في القاعدة (عشان الأدمن يقدر يشوفه في شاشة مراجعة
+      // المحادثات — "حرف ميتحذفش" عند الأدمن حتى لو الطرفين حذفوه بينهم).
       await db.ref(`chatThreads/${chatId}/messages/${msgId}`).update({
-        deleted: true, text: null, url: null, fileName: null, fileSize: null, mimeType: null,
-        deletedAt: firebase.database.ServerValue.TIMESTAMP
+        deleted: true, deletedAt: firebase.database.ServerValue.TIMESTAMP
       });
     }else{
-      // حذف عندي فقط: بيتفلتر من واجهتي بس، وتفضل الرسالة موجودة عند الطرف التاني
+      // حذف عندي فقط: بيتفلتر من واجهتي بس، وتفضل الرسالة موجودة عند الطرف التاني والأدمن
       await db.ref(`chatThreads/${chatId}/messages/${msgId}/deletedFor/${state.user.uid}`).set(true);
     }
     hideModal();
