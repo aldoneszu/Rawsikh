@@ -276,6 +276,8 @@ a{color:inherit; text-decoration:none;}
 .bubble.them{align-self:flex-end; background:var(--surface); border:1px solid var(--border); border-bottom-right-radius:4px;}
 .bubble .meta{display:flex; gap:5px; align-items:center; justify-content:flex-end; font-size:10px; opacity:.7; margin-top:4px;}
 .bubble.system{align-self:center; background:var(--surface-2); color:var(--text-dim); font-size:12px; border-radius:10px; padding:6px 12px;}
+.bubble.deleted-bubble{opacity:.65; font-style:italic;}
+.bubble.deleted-bubble .deleted-icon{margin-inline-end:2px;}
 .chat-input-bar{display:flex; gap:8px; padding:10px 14px calc(10px + env(safe-area-inset-bottom)); background:var(--surface); border-top:1px solid var(--border); align-items:flex-end;}
 .chat-input-bar textarea{flex:1; max-height:110px; border-radius:20px; padding:11px 16px;}
 .send-btn{width:44px; height:44px; border-radius:50%; background:var(--accent); color:var(--surface); border:none; flex-shrink:0; font-size:17px;}
@@ -2005,19 +2007,31 @@ function bindChatEvents(){
     const msgs = snap.val()||{};
     const body = $('#chatBody');
     if(!body) return;
-    const entries = Object.entries(msgs).sort((a,b)=>(a[1].ts||0)-(b[1].ts||0));
-    body.innerHTML = entries.map(([id,m])=> renderChatBubble(m)).join('') || `<div class="bubble system">ابدأ المحادثة الآن 🌙</div>`;
+    const myUid = state.user.uid;
+    // نستثني الرسائل اللي أنا حذفتها "عندي فقط" — تفضل موجودة عند الطرف التاني
+    const entries = Object.entries(msgs)
+      .filter(([id,m])=> !(m.deletedFor && m.deletedFor[myUid]))
+      .sort((a,b)=>(a[1].ts||0)-(b[1].ts||0));
+    body.innerHTML = entries.map(([id,m])=> renderChatBubble(id,m)).join('') || `<div class="bubble system">ابدأ المحادثة الآن 🌙</div>`;
     body.scrollTop = body.scrollHeight;
-    // تحديث حالة القراءة للرسائل الواردة
-    entries.forEach(([id,m])=>{ if(m.senderUid!==state.user.uid && !m.read){ db.ref(`chatThreads/${chatId}/messages/${id}/read`).set(true); } });
+    // تحديث حالة القراءة للرسائل الواردة (غير المحذوفة)
+    entries.forEach(([id,m])=>{ if(m.senderUid!==myUid && !m.read && !m.deleted){ db.ref(`chatThreads/${chatId}/messages/${id}/read`).set(true); } });
     $all('.chat-img', body).forEach(img=> img.addEventListener('click', ()=> openImgViewer(img.dataset.full||img.src)));
   });
+  bindMessageLongPress(chatId);
 }
-function renderChatBubble(m){
+function renderChatBubble(id, m){
   const mine = m.senderUid===state.user.uid;
   const tick = mine ? (' '+(m.read?'✓✓':'✓')) : '';
+  // كل رسالة بتاخد data-msg-id/data-mine عشان الضغط المطوّل يقدر يحذفها (زي الواتس)
+  if(m.deleted){
+    return `<div class="bubble ${mine?'me':'them'} deleted-bubble" data-msg-id="${id}" data-mine="${mine?'1':'0'}">
+      <span class="deleted-icon">🚫</span> تم حذف هذه الرسالة
+      <div class="meta">${fmtTime(m.ts)}</div>
+    </div>`;
+  }
   if(m.type==='image'){
-    return `<div class="bubble media ${mine?'me':'them'}">
+    return `<div class="bubble media ${mine?'me':'them'}" data-msg-id="${id}" data-mine="${mine?'1':'0'}">
       <div class="chat-img-wrap">
         <img class="chat-img" src="${esc(m.url)}" data-full="${esc(m.url)}" loading="lazy">
         <div class="meta">${fmtTime(m.ts)}${tick}</div>
@@ -2025,13 +2039,13 @@ function renderChatBubble(m){
     </div>`;
   }
   if(m.type==='file'){
-    return `<div class="bubble file-bubble ${mine?'me':'them'}">
+    return `<div class="bubble file-bubble ${mine?'me':'them'}" data-msg-id="${id}" data-mine="${mine?'1':'0'}">
       <div class="file-ic">📄</div>
       <div class="file-info"><b>${esc(m.fileName||'ملف')}</b><span>${fmtBytes(m.fileSize)}</span></div>
       <a class="file-dl" href="${esc(m.url)}" target="_blank" rel="noopener" download>⬇️</a>
     </div>`;
   }
-  return `<div class="bubble ${mine?'me':'them'}">${esc(m.text)}<div class="meta">${fmtTime(m.ts)}${tick}</div></div>`;
+  return `<div class="bubble ${mine?'me':'them'}" data-msg-id="${id}" data-mine="${mine?'1':'0'}">${esc(m.text)}<div class="meta">${fmtTime(m.ts)}${tick}</div></div>`;
 }
 async function sendChatMessage(){
   const input = $('#chatInput'); const text = input.value.trim();
@@ -2041,6 +2055,84 @@ async function sendChatMessage(){
   try{
     await db.ref('chatThreads/'+chatId+'/messages').push({ senderUid: state.user.uid, type:'text', text, ts: firebase.database.ServerValue.TIMESTAMP, read:false });
   }catch(e){ toast('تعذر إرسال الرسالة'); }
+}
+/* ====== حذف الرسائل بالضغط المطوّل (زي واتساب) ====== */
+function bindMessageLongPress(chatId){
+  const body = $('#chatBody');
+  if(!body || body._longPressBound) return; // نمنع تكرار ربط المستمعين لما الشات يتفتح أكتر من مرة
+  body._longPressBound = true;
+  const LONG_PRESS_MS = 450, MOVE_TOLERANCE = 10;
+  let pressTimer = null, startX = 0, startY = 0, targetBubble = null;
+  const clearPress = ()=>{ if(pressTimer){ clearTimeout(pressTimer); pressTimer = null; } targetBubble = null; };
+  const startPress = (bubble, x, y)=>{
+    targetBubble = bubble; startX = x; startY = y;
+    pressTimer = setTimeout(()=>{
+      if(targetBubble){ openMsgActionSheet(chatId, targetBubble.dataset.msgId, targetBubble.dataset.mine==='1'); }
+      clearPress();
+    }, LONG_PRESS_MS);
+  };
+  body.addEventListener('touchstart', e=>{
+    const bubble = e.target.closest('.bubble[data-msg-id]');
+    if(!bubble) return;
+    const t = e.touches[0];
+    startPress(bubble, t.clientX, t.clientY);
+  }, {passive:true});
+  body.addEventListener('touchmove', e=>{
+    if(!pressTimer) return;
+    const t = e.touches[0];
+    if(Math.abs(t.clientX-startX)>MOVE_TOLERANCE || Math.abs(t.clientY-startY)>MOVE_TOLERANCE) clearPress();
+  }, {passive:true});
+  body.addEventListener('touchend', clearPress);
+  body.addEventListener('touchcancel', clearPress);
+  // دعم الفأرة على الكمبيوتر: ضغط مطوّل بالزر الشمال + كليك يمين كاختصار مباشر
+  body.addEventListener('mousedown', e=>{
+    if(e.button!==0) return;
+    const bubble = e.target.closest('.bubble[data-msg-id]');
+    if(!bubble) return;
+    startPress(bubble, e.clientX, e.clientY);
+  });
+  body.addEventListener('mousemove', e=>{
+    if(!pressTimer) return;
+    if(Math.abs(e.clientX-startX)>MOVE_TOLERANCE || Math.abs(e.clientY-startY)>MOVE_TOLERANCE) clearPress();
+  });
+  body.addEventListener('mouseup', clearPress);
+  body.addEventListener('mouseleave', clearPress);
+  body.addEventListener('contextmenu', e=>{
+    const bubble = e.target.closest('.bubble[data-msg-id]');
+    if(!bubble) return;
+    e.preventDefault();
+    clearPress();
+    openMsgActionSheet(chatId, bubble.dataset.msgId, bubble.dataset.mine==='1');
+  });
+}
+function openMsgActionSheet(chatId, msgId, mine){
+  showModal(`
+    <h3>خيارات الرسالة</h3>
+    <button class="btn ghost" id="btnDelForMe" style="margin-bottom:10px">حذف عندي فقط</button>
+    ${mine ? `<button class="btn danger" id="btnDelForAll" style="margin-bottom:10px">حذف لدى الجميع</button>` : ``}
+    <button class="btn secondary" id="btnCancelDelMsg">إلغاء</button>`);
+  $('#btnDelForMe').addEventListener('click', ()=> deleteMessage(chatId, msgId, false));
+  $('#btnDelForAll')?.addEventListener('click', ()=> deleteMessage(chatId, msgId, true));
+  $('#btnCancelDelMsg').addEventListener('click', ()=> hideModal());
+}
+async function deleteMessage(chatId, msgId, forEveryone){
+  try{
+    if(forEveryone){
+      // حذف لدى الجميع: بيستبدل محتوى الرسالة بعلامة "محذوفة" عند الطرفين (زي الواتس)
+      await db.ref(`chatThreads/${chatId}/messages/${msgId}`).update({
+        deleted: true, text: null, url: null, fileName: null, fileSize: null, mimeType: null,
+        deletedAt: firebase.database.ServerValue.TIMESTAMP
+      });
+    }else{
+      // حذف عندي فقط: بيتفلتر من واجهتي بس، وتفضل الرسالة موجودة عند الطرف التاني
+      await db.ref(`chatThreads/${chatId}/messages/${msgId}/deletedFor/${state.user.uid}`).set(true);
+    }
+    hideModal();
+    toast(forEveryone ? 'تم حذف الرسالة لدى الجميع' : 'تم حذف الرسالة عندك فقط');
+  }catch(e){
+    console.error(e);
+    toast('تعذر حذف الرسالة: ' + (e.message||''));
+  }
 }
 const MAX_CHAT_FILE_MB = 15;
 async function uploadChatFile(file){
