@@ -669,11 +669,20 @@ async function redeemCode(){
     const subUpdate = isTrial
       ? { codeId: code, type: 'trial', status:'trial', expiresAt: Date.now() + 3*24*60*60*1000 }
       : { codeId: code, type: finalCodeData.plan||finalCodeData.type, status:'active', expiresAt: finalCodeData.expiresAt||null };
-    await db.ref('users/'+myUid+'/subscription').set(subUpdate);
-    await db.ref('users/'+myUid+'/status').set('active');
+    // كتابة واحدة ذرّية (multi-path update) بدل كتابتين منفصلتين (subscription ثم status):
+    // لو الكتابة الأولى نجحت والتانية فشلت (مثلاً بسبب صلاحيات/قواعد Firebase)، كان الحساب
+    // يفضل معلّق (status لسه pending) رغم إن الكود اتحجز واتحرق، فالمستخدم يحتاج كود تاني
+    // من غير ما يبين له سبب واضح. دلوقتي الاتنين بيتكتبوا مع بعض أو محدش منهم يتكتب.
+    await db.ref().update({
+      ['users/'+myUid+'/subscription']: subUpdate,
+      ['users/'+myUid+'/status']: 'active'
+    });
     toast('تم تفعيل حسابك بنجاح 🎉');
   }catch(e){
-    toast('تعذر التفعيل: ' + (e.message||''));
+    console.error('redeemCode failed:', e);
+    // مدة أطول للرسالة عشان لو السبب صلاحيات (Permission Denied) في Firebase Rules
+    // يبان واضح ومتختفيش بسرعة، بدل ما يظهر إحساس إن "مفيش حاجة حصلت"
+    toast('تعذر التفعيل: ' + (e.message||'حاول مرة أخرى أو تواصل مع الأدمن'), 5000);
   } finally { if(btn){btn.disabled=false; btn.textContent='تفعيل الحساب';} }
 }
 function screenBanned(){
