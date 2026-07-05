@@ -444,6 +444,12 @@ function getDeviceId(){
   if(!id){ id = 'dev_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,10); localStorage.setItem('rw_device_id', id); }
   return id;
 }
+// حفظ آخر تاب مفتوح (لوحة الأدمن / تبويبات المعلمة أو الطالب) في localStorage، عشان
+// لما المستخدم يعمل Refresh للصفحة، يرجع لنفس الشاشة اللي كان فيها بدل ما يترمي
+// دايمًا على الشاشة الرئيسية (كانت المتغيرات دي بتتصفر لقيمتها الافتراضية مع كل تحميل
+// جديد للصفحة لأنها كانت مجرد متغيرات JS عادية في الذاكرة من غير أي حفظ).
+function saveNavTab(key, value){ try{ localStorage.setItem('rw_nav_'+key, value); }catch(_){} }
+function loadNavTab(key, fallback){ try{ return localStorage.getItem('rw_nav_'+key) || fallback; }catch(_){ return fallback; } }
 function showModal(html){ $('#modalSheet').innerHTML = `<div class="sheet-handle"></div>${html}`; $('#modalBg').classList.add('active'); }
 function hideModal(){ $('#modalBg').classList.remove('active'); }
 document.addEventListener('DOMContentLoaded', ()=>{
@@ -749,6 +755,7 @@ function resetLocalState(){
   adminView = 'dashboard';
   teacherView = 'students';
   studentView = 'home';
+  try{ localStorage.removeItem('rw_nav_admin'); localStorage.removeItem('rw_nav_teacher'); localStorage.removeItem('rw_nav_student'); }catch(_){}
   authTab = 'login';
   regRole = null;
   usersFilter = 'all';
@@ -834,7 +841,7 @@ function setupPresence(){
 function logout(){ auth.signOut(); }
 
 /* =====[ SECTION: ADMIN PANEL ]===== */
-let adminView = 'dashboard';
+let adminView = loadNavTab('admin', 'dashboard');
 // حالة لوحة المفاتيح: بحث/فلاتر/ترتيب/صفحات/تحديد جماعي
 let keysState = { search:'', status:'all', type:'all', sort:'newest', page:1, selected:new Set() };
 const KEYS_PAGE_SIZE = 12;
@@ -868,7 +875,7 @@ function adminViewHtml(){
 function bindAdminEvents(){
   $('#btnThemeToggle')?.addEventListener('click', ()=>{ setTheme(state.theme==='dark'?'light':'dark'); render(); });
   $('#btnLogout')?.addEventListener('click', logout);
-  $all('.bottom-nav [data-v]').forEach(b=>b.addEventListener('click', ()=>{ adminView=b.dataset.v; render(); }));
+  $all('.bottom-nav [data-v]').forEach(b=>b.addEventListener('click', ()=>{ adminView=b.dataset.v; saveNavTab('admin', adminView); render(); }));
   bindAdminViewEvents();
 }
 function refreshAdminContent(){ $('#adminContent').innerHTML = adminViewHtml(); bindAdminViewEvents(); }
@@ -1568,7 +1575,7 @@ async function loadAdminReports(){
 }
 
 /* =====[ SECTION: TEACHER PANEL ]===== */
-let teacherView = 'students'; // students | profile | settings
+let teacherView = (loadNavTab('teacher','students')==='profile') ? 'students' : loadNavTab('teacher','students'); // students | profile | settings
 let teacherActiveStudent = null; // {uid, name}
 function screenTeacherShell(){
   return `
@@ -1593,8 +1600,8 @@ function teacherViewHtml(){
 }
 function bindTeacherEvents(){
   $('#btnThemeToggle')?.addEventListener('click', ()=>{ setTheme(state.theme==='dark'?'light':'dark'); render(); });
-  $all('.bottom-nav [data-v]').forEach(b=>b.addEventListener('click', ()=>{ teacherView=b.dataset.v; render(); }));
-  $('#btnBackToStudents')?.addEventListener('click', ()=>{ teacherView='students'; teacherActiveStudent=null; render(); });
+  $all('.bottom-nav [data-v]').forEach(b=>b.addEventListener('click', ()=>{ teacherView=b.dataset.v; saveNavTab('teacher', teacherView); render(); }));
+  $('#btnBackToStudents')?.addEventListener('click', ()=>{ teacherView='students'; teacherActiveStudent=null; saveNavTab('teacher','students'); render(); });
   bindTeacherViewEvents();
 }
 function bindTeacherViewEvents(){
@@ -1713,7 +1720,7 @@ function openDailyLogModal(){
 }
 
 /* =====[ SECTION: STUDENT PANEL ]===== */
-let studentView = 'home'; // home | settings
+let studentView = loadNavTab('student', 'home'); // home | settings
 let myTeacherCache = null;
 function screenStudentShell(){
   return `
@@ -1735,7 +1742,7 @@ function studentViewHtml(){
 }
 function bindStudentEvents(){
   $('#btnThemeToggle')?.addEventListener('click', ()=>{ setTheme(state.theme==='dark'?'light':'dark'); render(); });
-  $all('.bottom-nav [data-v]').forEach(b=>b.addEventListener('click', ()=>{ studentView=b.dataset.v; render(); }));
+  $all('.bottom-nav [data-v]').forEach(b=>b.addEventListener('click', ()=>{ studentView=b.dataset.v; saveNavTab('student', studentView); render(); }));
   bindStudentViewEvents();
 }
 function bindStudentViewEvents(){
