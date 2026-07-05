@@ -650,11 +650,20 @@ async function redeemCode(){
     });
 
     if(!txResult.committed){
-      // المعاملة اتلغت، نجيب سبب واضح للمستخدم برسالة منفصلة (قراءة بسيطة، بدون كتابة)
+      // المعاملة اتلغت، نجيب سبب واضح ودقيق للمستخدم بدل رسالة عامة، عشان يبان
+      // فورًا هل السبب: كود غير موجود / نوع غير مطابق / مربوط بجهاز فعلاً /
+      // متعطّل من الأدمن / منتهي الصلاحية — من غير ما نحتاج نفتح أدوات المطوّر
       const snap = await db.ref('codes/'+code).get();
-      if(!snap.exists()){ toast('الكود غير موجود'); }
-      else if(snap.val().type !== myRole){ toast('هذا الكود غير مخصص لدورك'); }
-      else { toast('الكود مستخدم أو غير صالح'); logSecurityAlert('code_reuse_attempt', code); }
+      if(!snap.exists()){ toast('الكود غير موجود — تأكد إنك كتبته صح'); }
+      else {
+        const v = snap.val();
+        if(v.type !== myRole){ toast('هذا الكود مخصص لـ '+(v.type==='teacher'?'المعلمات':'الطلاب')+'، مش لدورك الحالي'); }
+        else if(v.deviceId){ toast('هذا الكود مستخدم بالفعل على جهاز آخر'); }
+        else if(v.status==='disabled'){ toast('هذا الكود معطّل من الإدارة'); }
+        else if(v.status==='expired'){ toast('هذا الكود منتهي الصلاحية'); }
+        else { toast('تعذر التفعيل بسبب تعارض مؤقت، جرّب تاني بعد لحظة'); }
+        logSecurityAlert('code_reuse_attempt', code);
+      }
       return;
     }
 
