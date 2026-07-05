@@ -636,10 +636,17 @@ async function redeemCode(){
     // transaction ذرّية زي حجز اسم المستخدم بالظبط: فايربيس بيضمن إن التعديل
     // يحصل مرة واحدة بس على أحدث نسخة من البيانات، وأي محاولة تانية في نفس
     // اللحظة هتتلغى (تترجع undefined) تلقائيًا.
+    // عيب جديد (مُصلَح): لو المتصفح مفتحش الكود ده قبل كده، فايربيس بينادي هنا
+    // أول مرة بقيمة null (مفيش نسخة محفوظة محليًا) قبل ما يجيب القيمة الحقيقية
+    // من السيرفر. كان الكود القديم بيقفل ويلغي المعاملة نهائيًا فور ما يشوف null
+    // (return بدون قيمة = إلغاء نهائي)، وده بيمنع فايربيس من الرجوع بالقيمة
+    // الحقيقية والمحاولة تاني — فأي كود صحيح فعليًا كان بيترفض بغلط من أول مرة
+    // يُقرأ فيها. دلوقتي بنرجّع null (مش undefined) في الحالة دي، وده بيخلي
+    // فايربيس يقارنها بالسيرفر ويعيد نداء الدالة تلقائيًا بالقيمة الحقيقية.
     const txResult = await db.ref('codes/'+code).transaction(cur=>{
-      if(cur===null) return; // الكود غير موجود أصلاً — نلغي المعاملة
-      if(cur.status!=='active' || cur.deviceId) return; // مستخدم أو غير صالح — نلغي المعاملة
-      if(cur.type !== myRole) return; // نوع غير مطابق لدور المستخدم — نلغي المعاملة
+      if(cur===null) return null; // نسيب فايربيس يتأكد من السيرفر ويعيد المحاولة بدل الإلغاء الفوري
+      if(cur.status!=='active' || cur.deviceId) return; // مستخدم أو غير صالح — نلغي المعاملة عن قصد
+      if(cur.type !== myRole) return; // نوع غير مطابق لدور المستخدم — نلغي المعاملة عن قصد
       return {
         ...cur,
         deviceId: dId,
@@ -649,10 +656,11 @@ async function redeemCode(){
       };
     });
 
-    if(!txResult.committed){
-      // المعاملة اتلغت، نجيب سبب واضح ودقيق للمستخدم بدل رسالة عامة، عشان يبان
-      // فورًا هل السبب: كود غير موجود / نوع غير مطابق / مربوط بجهاز فعلاً /
-      // متعطّل من الأدمن / منتهي الصلاحية — من غير ما نحتاج نفتح أدوات المطوّر
+    const finalCodeData = txResult.committed ? txResult.snapshot.val() : null;
+    if(!finalCodeData || finalCodeData.assignedUid !== myUid){
+      // مش احنا اللي فزنا بالمعاملة (أو الكود مش موجود أصلاً) — نجيب سبب واضح ودقيق
+      // بدل رسالة عامة، عشان يبان فورًا هل السبب: كود غير موجود / نوع غير مطابق /
+      // مربوط بجهاز فعلاً / متعطّل من الأدمن / منتهي الصلاحية
       const snap = await db.ref('codes/'+code).get();
       if(!snap.exists()){ toast('الكود غير موجود — تأكد إنك كتبته صح'); }
       else {
@@ -661,17 +669,10 @@ async function redeemCode(){
         else if(v.deviceId){ toast('هذا الكود مستخدم بالفعل على جهاز آخر'); }
         else if(v.status==='disabled'){ toast('هذا الكود معطّل من الإدارة'); }
         else if(v.status==='expired'){ toast('هذا الكود منتهي الصلاحية'); }
-        else { toast('تعذر التفعيل بسبب تعارض مؤقت، جرّب تاني بعد لحظة'); }
+        else { toast('تعذر التفعيل بسبب تعارض مؤقت، جرّب تاني'); }
         logSecurityAlert('code_reuse_attempt', code);
       }
       return;
-    }
-
-    const finalCodeData = txResult.snapshot.val();
-    // تأكيد إضافي إننا فعلاً احنا اللي فزنا بالمعاملة (وليس مستخدم آخر كتب بيانات
-    // مطابقة بالتوقيت نفسه بشكل نادر جدًا)
-    if(!finalCodeData || finalCodeData.assignedUid !== myUid){
-      toast('الكود مستخدم أو غير صالح'); logSecurityAlert('code_reuse_attempt', code); return;
     }
 
     const isTrial = finalCodeData.plan==='trial';
