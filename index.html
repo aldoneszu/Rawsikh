@@ -406,6 +406,16 @@ const AGORA_APP_ID = "0d60209ff93e4aa196f1ba79151ab296";
 // ملحوظة: الوضع دلوقتي "App ID فقط" (بدون Token) — لازم يتلغى الـ App Certificate من Agora Console
 // من: https://console.agora.io -> مشروعك -> Authentication -> اختار "App ID" بس (مش "App ID + Token")
 
+// رفع الصور/الملفات في الشات بقى عن طريق Cloudinary (مجاني بالكامل، من غير أي كارت بنكي)
+// بدل Firebase Storage اللي بقى محتاج خطة Blaze (مدفوعة). عشان تشغّلها:
+// 1) اعمل حساب مجاني على https://cloudinary.com (بالإيميل، من غير أي بيانات دفع)
+// 2) من الـ Dashboard، هتلاقي "Cloud name" في الأعلى — انسخه حط مكان CLOUDINARY_CLOUD_NAME تحت
+// 3) روح Settings -> Upload -> Upload presets -> Add upload preset
+//    - Signing Mode: اختار "Unsigned" (مهم جدًا، عشان الرفع يشتغل من المتصفح مباشرة)
+//    - احفظ واسم الـ preset اللي طلع انسخه حط مكان CLOUDINARY_UPLOAD_PRESET تحت
+const CLOUDINARY_CLOUD_NAME = "skqml7lh";
+const CLOUDINARY_UPLOAD_PRESET = "rawasekh_chat";
+
 /* =====[ SECTION: INIT ]===== */
 firebase.initializeApp(FIREBASE_CONFIG);
 const auth = firebase.auth();
@@ -1573,7 +1583,11 @@ async function deleteUserCompletely(uid, u){
         const msgs = msgsSnap.val()||{};
         await Promise.all(Object.values(msgs).map(async m=>{
           if((m.type==='image'||m.type==='file') && m.url){
-            try{ await storage.refFromURL(m.url).delete(); }catch(_){ /* أفضل محاولة فقط — لو الملف مش موجود أو الصلاحية مرفوضة، نكمل */ }
+            // بقينا بنستخدم Cloudinary مش Firebase Storage، وحذف ملف من Cloudinary محتاج
+            // طلب "موقّع" بمفتاح سري (API Secret) — ده مينفعش يتعمل من المتصفح بأمان
+            // (أي حد كان هيقدر يشوفه ويحذف ملفات غيره). فبنسيب ملف الميديا نفسه
+            // زي ما هو على Cloudinary (مش هيتحسب عليك فلوس، بس هياخد مساحة من الكوتة
+            // المجانية)، وبنكتفي بمسح الرسالة والداتا من قاعدة البيانات بس.
           }
         }));
       }catch(_){}
@@ -2032,21 +2046,36 @@ const MAX_CHAT_FILE_MB = 15;
 async function uploadChatFile(file){
   const o = state.chatWith; if(!o) return;
   if(file.size > MAX_CHAT_FILE_MB*1024*1024){ toast(`الملف كبير جدًا (الحد الأقصى ${MAX_CHAT_FILE_MB}MB)`); return; }
+  if(CLOUDINARY_CLOUD_NAME==='YOUR_CLOUD_NAME' || CLOUDINARY_UPLOAD_PRESET==='YOUR_UNSIGNED_PRESET'){
+    toast('لسه محتاج تظبط إعدادات Cloudinary في أعلى الكود (CLOUDINARY_CLOUD_NAME/CLOUDINARY_UPLOAD_PRESET)');
+    return;
+  }
   const chatId = pairId(state.user.uid, o.uid);
   const isImage = file.type.startsWith('image/');
-  const safeName = file.name.replace(/[^a-zA-Z0-9_.\-\u0600-\u06FF]/g,'_');
-  const path = `chatFiles/${chatId}/${Date.now()}_${safeName}`;
   const wrap = $('#uploadProgressWrap'), fill = $('#uploadProgressFill');
   if(wrap) wrap.style.display='block';
   try{
-    const ref = storage.ref().child(path);
-    const task = ref.put(file, {contentType: file.type||'application/octet-stream'});
-    task.on('state_changed', snap=>{
-      const pct = snap.totalBytes ? Math.round((snap.bytesTransferred/snap.totalBytes)*100) : 0;
-      if(fill) fill.style.width = pct+'%';
+    // "auto" بتخلي Cloudinary يكتشف نوع الملف بنفسه (صورة/فيديو/ملف عادي زي pdf أو docx أو zip)
+    const url = await new Promise((resolve, reject)=>{
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/auto/upload`);
+      xhr.upload.onprogress = (e)=>{
+        if(e.lengthComputable && fill){ fill.style.width = Math.round((e.loaded/e.total)*100)+'%'; }
+      };
+      xhr.onload = ()=>{
+        try{
+          const res = JSON.parse(xhr.responseText);
+          if(xhr.status>=200 && xhr.status<300 && res.secure_url) resolve(res.secure_url);
+          else reject(new Error(res.error?.message || 'فشل الرفع'));
+        }catch(err){ reject(err); }
+      };
+      xhr.onerror = ()=>reject(new Error('تعذر الاتصال بالسيرفر'));
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+      fd.append('folder', 'chatFiles/'+chatId);
+      xhr.send(fd);
     });
-    await task;
-    const url = await ref.getDownloadURL();
     await db.ref('chatThreads/'+chatId+'/messages').push({
       senderUid: state.user.uid, type: isImage?'image':'file', url,
       fileName: file.name, fileSize: file.size, mimeType: file.type||null,
