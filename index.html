@@ -470,16 +470,23 @@ function loadChatWith(myUid){
 function clearChatWith(){ try{ localStorage.removeItem('rw_chat_with'); }catch(_){} }
 
 /* =====[ SECTION: BACK BUTTON / HISTORY NAV STACK ]===== */
-// المشكلة: زرار الرجوع في الموبايل كان بيقفل التبويب/المتصفح ويطلّع المستخدم
-// برا المنصة خالص، حتى لو كان بس فاتح شات أو مودال أو صورة (يعني حاجة المفروض
-// الرجوع يقفلها هي بس ويسيبه جوه التطبيق). الحل: كل مرة نفتح "طبقة" فوق الشاشة
-// الأساسية (شات، مودال، فيوير صورة)، بنضيف Entry وهمي في history المتصفح.
-// أول ما المستخدم يدوس Back، المتصفح بيرجع الـ history خطوة، وإحنا بنمسك حدث
-// popstate ونقفل أعلى طبقة مفتوحة بدل ما نسيب المتصفح يطلّع من الصفحة. ولو
-// مفيش أي طبقة مفتوحة (يعني هو أصلاً واقف على شاشة رئيسية)، مبنعملش حاجة،
-// فالـ Back الطبيعي (خروج من الموقع) بيشتغل عادي زي أي تطبيق تاني.
+// المشكلة الأصلية: زرار الرجوع في الموبايل كان بيقفل التاب فورًا من أي شاشة،
+// حتى الشاشة الرئيسية، لأنه مكنش فيه غير "خطوة واحدة" في تاريخ المتصفح؛ يعني
+// أول ضغطة Back كانت بتقفل الصفحة قبل حتى ما نقدر نلحق نتصرف فيها بالجافاسكريبت.
+// الحل: من أول ما الصفحة تفتح، بنضيف "خطوة احتياطية" في history فورًا، فبيبقى
+// دايمًا فيه خطوة يرجعلها المتصفح جوه نفس الصفحة بدل ما يقفلها على طول.
+//
+// بعد كده، أي طبقة إضافية بنفتحها (شات/مودال/صورة) بتضيف خطوة زيادة فوق دي.
+// ولو المستخدم دوس Back وهو مفيش أي طبقة مفتوحة (يعني واقف على شاشة رئيسية):
+//  - أول ضغطة: بنمنعها، نورّي تنبيه "اضغط رجوع تاني للخروج"، ونعيد بناء الخطوة
+//    الاحتياطية (يعني بيفضل جوه المنصة).
+//  - ضغطة تانية خلال ثانيتين: بنسيبها تعدي عادي ويخرج فعلاً من المنصة.
+// (نفس فكرة "اضغط رجوع مرة أخرى للخروج" الموجودة في واتساب/إنستجرام وغيرهم).
 let navStack = [];
 let suppressNextPopstate = false;
+let lastRootBackAt = 0;
+const ROOT_BACK_EXIT_WINDOW = 2000; // مللي ثانية — لازم يدوس مرتين خلالها عشان يخرج فعليًا
+
 function pushNav(type){
   navStack.push(type);
   try{ history.pushState({rwNav:true, depth:navStack.length}, ''); }catch(_){}
@@ -493,14 +500,28 @@ function popNavIfMatches(type){
     try{ history.back(); }catch(_){}
   }
 }
+// الخطوة الاحتياطية الأولى — لازم تتنفذ فورًا عند تحميل الصفحة قبل أي ضغطة Back محتملة.
+try{ history.pushState({rwRoot:true}, ''); }catch(_){}
+
 window.addEventListener('popstate', ()=>{
   if(suppressNextPopstate){ suppressNextPopstate = false; return; }
-  if(!navStack.length) return; // مفيش طبقة مفتوحة — سيب الرجوع الطبيعي يحصل
-  const type = navStack.pop();
-  if(type==='imgViewer') closeImgViewer(true);
-  else if(type==='modal') hideModal(true);
-  else if(type==='chat') closeChat(true);
+  if(navStack.length){
+    const type = navStack.pop();
+    if(type==='imgViewer') closeImgViewer(true);
+    else if(type==='modal') hideModal(true);
+    else if(type==='chat') closeChat(true);
+    return;
+  }
+  // مفيش طبقة مفتوحة — المستخدم واقف على شاشة رئيسية وبيحاول يخرج بالكامل.
+  const now = Date.now();
+  if(now - lastRootBackAt < ROOT_BACK_EXIT_WINDOW){
+    return; // ضغطة تانية خلال الوقت المسموح — اسمح بالخروج الحقيقي
+  }
+  lastRootBackAt = now;
+  toast('اضغط رجوع مرة أخرى للخروج من المنصة');
+  try{ history.pushState({rwRoot:true}, ''); }catch(_){} // إعادة بناء الخطوة الاحتياطية عشان يفضل جوه المنصة
 });
+
 
 function showModal(html){ $('#modalSheet').innerHTML = `<div class="sheet-handle"></div>${html}`; $('#modalBg').classList.add('active'); pushNav('modal'); }
 function hideModal(fromBack){ $('#modalBg').classList.remove('active'); if(!fromBack) popNavIfMatches('modal'); }
