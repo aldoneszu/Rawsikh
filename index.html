@@ -2823,7 +2823,7 @@ async function loadTeacherStudentProfile(){
     if(el) el.textContent = sessions.length ? sessions.map(s=>`${WEEKDAY_NAMES_AR[s.day]} — ${s.time}`).join(' · ') : 'لسه معملتش أي ميعاد ثابت للطالب ده';
   });
   $('#btnOpenChat')?.addEventListener('click', ()=>openChat(sid, teacherActiveStudent.name));
-  $('#btnStartCall')?.addEventListener('click', ()=>startCall(sid, teacherActiveStudent.name));
+  $('#btnStartCall')?.addEventListener('click', goToCallLab);
   $('#btnEditProgress')?.addEventListener('click', openProgressModal);
   $('#btnAddLog')?.addEventListener('click', openDailyLogModal);
   $('#btnEditSchedule')?.addEventListener('click', ()=>openScheduleModal(sid, teacherActiveStudent.name));
@@ -3342,7 +3342,7 @@ function bindChatEvents(){
   state.chatLastRenderedLastId = null;
   state.pendingAttachments = [];
   $('#btnCloseChat').addEventListener('click', ()=>closeChat());
-  $('#btnCallFromChat').addEventListener('click', ()=>startCall(o.uid, o.name));
+  $('#btnCallFromChat').addEventListener('click', goToCallLab);
   $('#btnSendMsg').addEventListener('click', sendChatMessage);
   $('#chatInput').addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendChatMessage(); } });
   $('#btnAttachFile').addEventListener('click', ()=> $('#chatFileInput').click());
@@ -3982,6 +3982,17 @@ function _logError(label, err){
 function hashUidToNumber(uid){
   let h = 0; for(let i=0;i<uid.length;i++){ h = (h*31 + uid.charCodeAt(i)) >>> 0; }
   return (h % 2147483000) + 1;
+}
+// =====[ SECTION: CALL BUTTON → معمل المكالمات (خارجي) ]=====
+// نظام المكالمات الأصلي (startCall + Agora داخل المنصة) بقى معطّل مؤقتًا
+// من زرار المكالمة، لحد ما يتصلّح. بدل ما نفتح المكالمة القديمة، بنوجّه
+// المستخدم لصفحة "معمل المكالمات" (call-lab.html) المستقلة، بعد ما نتأكد
+// إنه فاهم إنه لازم يتفق مع الطرف التاني على نفس اسم/رقم الأوضة.
+function goToCallLab(){
+  const ok = confirm('هتدخل صفحة مكالمات منفصلة عن المنصة.\n\nلازم انت والطرف التاني تتفقوا الأول على نفس "اسم أو رقم الأوضة" (مثلاً عن طريق الشات)، وبعدين كل واحد يدخل بنفس الرقم من عنده.\n\nمتأكد إنك فاهم/عارف رقم الأوضة؟');
+  if(ok){
+    window.open('call-lab.html', '_blank');
+  }
 }
 // بقى في توكن حقيقي بيتجاب من TOKEN_SERVER_URL قبل أي join (شوف fetchAgoraToken تحت)
 async function startCall(otherUid, otherName){
