@@ -1484,13 +1484,13 @@ function pushMessageNotification(toUid, previewText){
   }catch(_){ /* تحسين إضافي فقط — مايوقفش إرسال الرسالة لو فشل */ }
 }
 // لما المستخدم يفتح شات مع حد معيّن، أي إشعارات رسائل واردة من نفس الشخص
-// بتتعلّم "مقروءة" تلقائيًا، لأنه أصلاً بيبص على المحادثة دلوقتي.
+// بتتشال خالص (مش بس تتعلّم مقروءة) لأنه أصلاً بيبص على المحادثة دلوقتي ومحتاجهاش تفضل متخزنة.
 function markChatNotificationsRead(otherUid){
   if(!state.user) return;
   db.ref('notifications/'+state.user.uid).orderByChild('fromUid').equalTo(otherUid).once('value').then(snap=>{
     const val = snap.val()||{};
     const updates = {};
-    Object.entries(val).forEach(([id,n])=>{ if(n.type==='message' && !n.read) updates[id+'/read']=true; });
+    Object.entries(val).forEach(([id,n])=>{ if(n.type==='message') updates[id]=null; });
     if(Object.keys(updates).length) db.ref('notifications/'+state.user.uid).update(updates);
   }).catch(()=>{});
 }
@@ -1523,14 +1523,16 @@ function openNotifPanel(){
       openChat(fromUid, el.dataset.notifFromName || 'مستخدم');
     });
   });
-  // بمجرد فتح لوحة الإشعارات، إشعارات الأدمن الشخصية (غير رسالة) بتتعلّم مقروءة فورًا
-  const updates = {};
-  personal.forEach(n=>{ if(n.type!=='message' && !n.read) updates[n.id+'/read']=true; });
-  if(Object.keys(updates).length) db.ref('notifications/'+state.user.uid).update(updates).catch(()=>{});
+  // بمجرد ما المستخدم يفتح لوحة الإشعارات ويشوفها، الإشعارات الشخصية (رسالة أو
+  // من الإدارة) بتتشال خالص من القاعدة — مفيش داعي تفضل متخزنة لحد ما حد يشوفها.
+  const idsToDelete = {};
+  personal.forEach(n=>{ idsToDelete[n.id]=null; });
+  if(Object.keys(idsToDelete).length) db.ref('notifications/'+state.user.uid).update(idsToDelete).catch(()=>{});
   // وكمان بنسجّل إن المستخدم شاف الإشعارات العامة لحد دلوقتي
   const nowTs = Date.now();
   db.ref('notifSeen/'+state.user.uid).set(nowTs).catch(()=>{});
   notifState.lastSeenBroadcast = nowTs;
+  notifState.items = {};
   recomputeUnread(); updateNotifBadgeUI();
 }
 function logout(){ auth.signOut(); }
