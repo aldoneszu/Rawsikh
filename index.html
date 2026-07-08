@@ -236,6 +236,12 @@ a{color:inherit; text-decoration:none;}
   position:absolute; top:0; left:calc(50% - 2px); background:var(--danger); color:#fff; font-size:10px;
   min-width:16px; height:16px; border-radius:8px; display:flex; align-items:center; justify-content:center; padding:0 4px;
 }
+/* =====[ SECTION: جرس الإشعارات ]===== */
+.notif-badge{
+  position:absolute; top:-3px; left:-3px; background:var(--danger); color:#fff; font-size:10px; font-weight:800;
+  min-width:16px; height:16px; border-radius:8px; display:flex; align-items:center; justify-content:center; padding:0 4px;
+  border:1.5px solid var(--surface);
+}
 
 /* =====[ SECTION: LISTS (طلاب/معلمات/مفاتيح) ]===== */
 .list-item{
@@ -565,8 +571,19 @@ let state = {
   user:null, profile:null, deviceId:null, theme:'light',
   currentChatWith:null, chatListenerRef:null, msgsRef:null, presenceRef:null, chatPresenceRef:null,
   agoraClient:null, localAudioTrack:null, currentCallId:null, callTimerInt:null, callSeconds:0,
-  studentsCache:{}, teachersCache:{}, route:'loading', routeParams:{}
+  studentsCache:{}, teachersCache:{}, route:'loading', routeParams:{},
+  maintenance:{enabled:false, message:''} // حالة وضع الصيانة — بتتحدث لحظيًا من siteConfig/maintenance حتى قبل تسجيل الدخول
 };
+
+/* =====[ SECTION: وضع الصيانة (MAINTENANCE MODE) ]=====
+   بنسمع على siteConfig/maintenance من أول ما الصفحة تفتح (قراءة عامة مسموحة
+   للكل حتى بدون تسجيل دخول)، عشان لو الأدمن فعّله، يظهر فورًا لأي حد فاتح
+   المنصة (حتى لو لسه ماسجّلش دخول)، ما عدا الأدمن نفسه اللي لازم يقدر يدخل
+   دايمًا عشان يقفل وضع الصيانة تاني. */
+db.ref('siteConfig/maintenance').on('value', snap=>{
+  state.maintenance = snap.val() || {enabled:false, message:''};
+  render();
+});
 
 /* =====[ SECTION: UTILITIES ]===== */
 function $(sel,root=document){return root.querySelector(sel);}
@@ -956,6 +973,10 @@ function mushafDoSearch(){
 
 
 function showModal(html){ $('#modalSheet').innerHTML = `<div class="sheet-handle"></div>${html}`; $('#modalBg').classList.add('active'); pushNav('modal'); }
+// بتحدّث محتوى المودال المفتوح حاليًا من غير ما تضيف خطوة جديدة في تاريخ
+// المتصفح (لعكس showModal اللي بتضيف خطوة كل مرة) — مهم لأي مودال بيعاد رسمه
+// أكتر من مرة وهو مفتوح (زي مودال مواعيد الحلقة) عشان زرار الرجوع يفضل شغال بضغطة واحدة
+function updateModalContent(html){ $('#modalSheet').innerHTML = `<div class="sheet-handle"></div>${html}`; }
 function hideModal(fromBack){ $('#modalBg').classList.remove('active'); if(!fromBack) popNavIfMatches('modal'); }
 document.addEventListener('DOMContentLoaded', ()=>{
   $('#modalBg').addEventListener('click', e=>{ if(e.target.id==='modalBg') hideModal(); });
@@ -1000,6 +1021,12 @@ function logSecurityAlert(type, detail){
 /* =====[ SECTION: RENDER ROOT ]===== */
 function render(){
   const app = $('#app');
+  // بوابة وضع الصيانة: بتتفعّل قبل أي حاجة تانية، ولأي حد مش أدمن (حتى لو لسه
+  // مسجّلش دخول أصلاً)، عشان الأدمن يفضل قادر يدخل يقفل الصيانة تاني.
+  const isAdminUser = !!(state.profile && state.profile.role==='admin');
+  if(state.maintenance && state.maintenance.enabled && !isAdminUser && state.route!=='loading'){
+    app.innerHTML = screenMaintenance(); bindMaintenanceEvents(); return;
+  }
   if(state.route==='loading'){ app.innerHTML = `<div class="loader-wrap"><div class="loader-ring"></div><div style="font-family:var(--font-display);color:var(--accent);font-size:18px">رواسخ أكاديمية</div></div>`; return; }
   if(state.route==='auth'){ app.innerHTML = screenAuth(); bindAuthEvents(); return; }
   if(state.route==='pending'){ app.innerHTML = screenPending(); bindPendingEvents(); return; }
@@ -1215,6 +1242,34 @@ function screenBanned(){
 }
 function bindBannedEvents(){ $('#btnLogoutBanned')?.addEventListener('click', ()=>auth.signOut()); }
 
+// شاشة وضع الصيانة — بتظهر لأي حد مش أدمن لما الأدمن يفعّل الصيانة من لوحته.
+// فيها زرار مخفي لدخول الأدمن (تسجيل دخول عادي) عشان يقدر يوصل للوحته ويقفلها.
+function screenMaintenance(){
+  const msg = (state.maintenance && state.maintenance.message) || 'المنصة متوقفة مؤقتًا لإجراء بعض التحديثات، برجاء المحاولة لاحقًا 🌙';
+  return `<div class="screen active"><div class="container">
+    <div class="brand-hero">
+      <div class="logo">🛠️</div>
+      <h1 style="font-size:22px">المنصة تحت الصيانة</h1>
+      <p>${esc(msg)}</p>
+    </div>
+    ${state.user ? `
+      <button class="btn ghost" id="btnLogoutMaint">تسجيل الخروج</button>
+    ` : `
+      <button class="btn ghost sm" id="btnShowMaintLogin" style="margin:0 auto;display:block">دخول الإدارة</button>
+      <div id="maintLoginArea" style="display:none;margin-top:18px"></div>
+    `}
+  </div></div>`;
+}
+function bindMaintenanceEvents(){
+  $('#btnLogoutMaint')?.addEventListener('click', ()=>auth.signOut());
+  $('#btnShowMaintLogin')?.addEventListener('click', ()=>{
+    const area = $('#maintLoginArea'); if(!area) return;
+    area.style.display = 'block';
+    area.innerHTML = tplLoginForm();
+    $('#btnLogin')?.addEventListener('click', doLogin);
+  });
+}
+
 // عيب #9 (مُصلَح): شاشة جديدة تظهر تلقائيًا لما التجربة (trial) تنتهي،
 // وتسمح للمستخدم يفعّل بكود جديد بدل ما الحساب يفضل "active" للأبد.
 function screenExpired(){
@@ -1272,6 +1327,7 @@ function resetLocalState(){
   if(adminChatViewRef){ adminChatViewRef.off('value', adminChatViewCb); adminChatViewRef=null; adminChatViewCb=null; }
   $('#adminChatOverlay')?.classList.remove('active');
   stopTrialWatch();
+  stopNotifListeners();
 }
 
 // عيب #9 (مُصلَح): مفيش أي كود كان بيتحقق من expiresAt للاشتراك التجريبي،
@@ -1326,7 +1382,7 @@ auth.onAuthStateChanged(user=>{
       if(p && p.forceLogoutAt && p.forceLogoutAt > state.sessionStartedAt){ auth.signOut(); return; }
       state.profile = isAdminNode ? {...(p||{}), role:'admin'} : p;
       state.route = routeFromProfile(user.uid, state.profile, isAdminNode);
-      if(state.route==='ready'){ setupPresence(); startTrialWatch(); restoreChatIfNeeded(); if(!isAdminNode && p && p.role!=='admin') listenIncomingCalls(); }
+      if(state.route==='ready'){ setupPresence(); startTrialWatch(); restoreChatIfNeeded(); startNotifListeners(); if(!isAdminNode && p && p.role!=='admin') listenIncomingCalls(); }
       render();
     });
   }).catch(()=>{
@@ -1337,7 +1393,7 @@ auth.onAuthStateChanged(user=>{
       if(p && p.forceLogoutAt && p.forceLogoutAt > state.sessionStartedAt){ auth.signOut(); return; }
       state.profile = p;
       state.route = routeFromProfile(user.uid, p, false);
-      if(state.route==='ready'){ setupPresence(); startTrialWatch(); restoreChatIfNeeded(); if(p && p.role!=='admin') listenIncomingCalls(); }
+      if(state.route==='ready'){ setupPresence(); startTrialWatch(); restoreChatIfNeeded(); startNotifListeners(); if(p && p.role!=='admin') listenIncomingCalls(); }
       render();
     });
   });
@@ -1358,6 +1414,125 @@ function setupPresence(){
   r.onDisconnect().set({online:false, lastSeen: firebase.database.ServerValue.TIMESTAMP});
   r.set({online:true, lastSeen: firebase.database.ServerValue.TIMESTAMP});
 }
+
+/* =====[ SECTION: نظام الإشعارات (NOTIFICATIONS) ]=====
+   نوعين من الإشعارات:
+   1) إشعارات شخصية (notifications/{uid}/...) — بتتبعت لحد معيّن، زي "رسالة
+      جديدة من فلان" أو رسالة مباشرة من الأدمن لمستخدم بعينه.
+   2) إشعارات عامة (broadcastNotifications/...) — الأدمن يقدر يبعتها لكل
+      المستخدمين أو لفئة معيّنة (معلمات فقط / طلاب فقط)، وكل مستخدم بيتابع
+      آخر وقت شافها فيه (notifSeen/{uid}) عشان نحسب لو فيه جديد مالحقش يشوفه. */
+let notifState = { items:{}, unread:0, broadcastItems:{}, lastSeenBroadcast:0 };
+let notifPersonalRef=null, notifPersonalCb=null, notifBroadcastRef=null, notifBroadcastCb=null;
+function startNotifListeners(){
+  stopNotifListeners();
+  if(!state.user) return;
+  const uid = state.user.uid;
+  notifPersonalRef = db.ref('notifications/'+uid).limitToLast(60);
+  notifPersonalCb = notifPersonalRef.on('value', snap=>{
+    notifState.items = snap.val() || {};
+    recomputeUnread(); updateNotifBadgeUI();
+  });
+  notifBroadcastRef = db.ref('broadcastNotifications').limitToLast(30);
+  notifBroadcastCb = notifBroadcastRef.on('value', snap=>{
+    notifState.broadcastItems = snap.val() || {};
+    recomputeUnread(); updateNotifBadgeUI();
+  });
+  db.ref('notifSeen/'+uid).get().then(s=>{ notifState.lastSeenBroadcast = s.val() || 0; recomputeUnread(); updateNotifBadgeUI(); }).catch(()=>{});
+}
+function stopNotifListeners(){
+  if(notifPersonalRef && notifPersonalCb) notifPersonalRef.off('value', notifPersonalCb);
+  if(notifBroadcastRef && notifBroadcastCb) notifBroadcastRef.off('value', notifBroadcastCb);
+  notifPersonalRef=null; notifPersonalCb=null; notifBroadcastRef=null; notifBroadcastCb=null;
+  notifState = { items:{}, unread:0, broadcastItems:{}, lastSeenBroadcast:0 };
+  updateNotifBadgeUI();
+}
+function recomputeUnread(){
+  const myRole = state.profile ? state.profile.role : null;
+  let n = 0;
+  Object.values(notifState.items||{}).forEach(it=>{ if(!it.read) n++; });
+  Object.values(notifState.broadcastItems||{}).forEach(b=>{
+    const target = b.target || 'all';
+    if((target==='all' || target===myRole) && (b.ts||0) > (notifState.lastSeenBroadcast||0)) n++;
+  });
+  notifState.unread = n;
+}
+// بنحدّث شكل شارة العدد مباشرة على أي زرار جرس موجود في الصفحة حاليًا، من غير
+// ما نعمل render() كامل (عشان مانكسرش أي شاشة مفتوحة زي الشات وقت وصول إشعار).
+function updateNotifBadgeUI(){
+  const n = notifState.unread;
+  $all('.notif-badge').forEach(el=>{
+    if(n>0){ el.textContent = n>9?'9+':String(n); el.style.display='flex'; }
+    else { el.style.display='none'; }
+  });
+}
+function notifBellHtml(){
+  return `<button class="icon-btn" id="btnOpenNotif" title="الإشعارات" style="position:relative">🔔<span class="notif-badge" id="notifBadge" style="display:none">0</span></button>`;
+}
+function bindNotifBell(){
+  $('#btnOpenNotif')?.addEventListener('click', openNotifPanel);
+  updateNotifBadgeUI();
+}
+function pushMessageNotification(toUid, previewText){
+  if(!state.user || !toUid) return;
+  try{
+    db.ref('notifications/'+toUid).push({
+      type:'message', fromUid: state.user.uid, fromName: state.profile?.name||'مستخدم',
+      chatId: pairId(state.user.uid, toUid), text: String(previewText||'').slice(0,150),
+      ts: firebase.database.ServerValue.TIMESTAMP, read:false
+    });
+  }catch(_){ /* تحسين إضافي فقط — مايوقفش إرسال الرسالة لو فشل */ }
+}
+// لما المستخدم يفتح شات مع حد معيّن، أي إشعارات رسائل واردة من نفس الشخص
+// بتتعلّم "مقروءة" تلقائيًا، لأنه أصلاً بيبص على المحادثة دلوقتي.
+function markChatNotificationsRead(otherUid){
+  if(!state.user) return;
+  db.ref('notifications/'+state.user.uid).orderByChild('fromUid').equalTo(otherUid).once('value').then(snap=>{
+    const val = snap.val()||{};
+    const updates = {};
+    Object.entries(val).forEach(([id,n])=>{ if(n.type==='message' && !n.read) updates[id+'/read']=true; });
+    if(Object.keys(updates).length) db.ref('notifications/'+state.user.uid).update(updates);
+  }).catch(()=>{});
+}
+function notifItemHtml(n){
+  if(n._kind==='broadcast'){
+    return `<div class="list-item"><div class="avatar">📢</div><div class="li-body"><b>إشعار من الإدارة</b><span>${esc(n.text||'')}</span></div>
+      <div class="li-meta"><span class="chip neutral">${fmtDate(n.ts)}</span></div></div>`;
+  }
+  if(n.type==='message'){
+    return `<div class="list-item" data-notif-open data-notif-from="${esc(n.fromUid||'')}" data-notif-from-name="${esc(n.fromName||'مستخدم')}">
+      <div class="avatar">${initials(n.fromName||'')}</div>
+      <div class="li-body"><b>${esc(n.fromName||'مستخدم')}</b><span>${esc(n.text||'رسالة جديدة')}</span></div>
+      <div class="li-meta">${!n.read?'<span class="chip ok">جديد</span>':''}</div></div>`;
+  }
+  return `<div class="list-item"><div class="avatar">🔔</div><div class="li-body"><b>إشعار من الإدارة</b><span>${esc(n.text||'')}</span></div>
+    <div class="li-meta"><span class="chip neutral">${fmtDate(n.ts)}</span></div></div>`;
+}
+function openNotifPanel(){
+  const myRole = state.profile ? state.profile.role : null;
+  const personal = Object.entries(notifState.items||{}).map(([id,n])=>({id, ...n, _kind:'personal'}));
+  const broadcast = Object.entries(notifState.broadcastItems||{})
+    .map(([id,n])=>({id, ...n, _kind:'broadcast'}))
+    .filter(b=> (b.target||'all')==='all' || b.target===myRole);
+  const merged = [...personal, ...broadcast].sort((a,b)=>(b.ts||0)-(a.ts||0)).slice(0,60);
+  showModal(`<h3>الإشعارات</h3><div id="notifPanelList">${merged.length ? merged.map(notifItemHtml).join('') : '<div class="empty-state">لا يوجد إشعارات حتى الآن</div>'}</div>`);
+  $all('[data-notif-open]').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      const fromUid = el.dataset.notifFrom; if(!fromUid) return;
+      hideModal();
+      openChat(fromUid, el.dataset.notifFromName || 'مستخدم');
+    });
+  });
+  // بمجرد فتح لوحة الإشعارات، إشعارات الأدمن الشخصية (غير رسالة) بتتعلّم مقروءة فورًا
+  const updates = {};
+  personal.forEach(n=>{ if(n.type!=='message' && !n.read) updates[n.id+'/read']=true; });
+  if(Object.keys(updates).length) db.ref('notifications/'+state.user.uid).update(updates).catch(()=>{});
+  // وكمان بنسجّل إن المستخدم شاف الإشعارات العامة لحد دلوقتي
+  const nowTs = Date.now();
+  db.ref('notifSeen/'+state.user.uid).set(nowTs).catch(()=>{});
+  notifState.lastSeenBroadcast = nowTs;
+  recomputeUnread(); updateNotifBadgeUI();
+}
 function logout(){ auth.signOut(); }
 
 /* =====[ SECTION: ADMIN PANEL ]===== */
@@ -1371,6 +1546,7 @@ function screenAdminShell(){
   return `
   <div class="screen active">
     <div class="topbar"><h1>لوحة الإدارة</h1>
+      ${notifBellHtml()}
       <button class="icon-btn" id="btnThemeToggle">${state.theme==='dark'?'☀️':'🌙'}</button>
       <button class="icon-btn" id="btnLogout">⎋</button>
     </div>
@@ -1382,6 +1558,7 @@ function screenAdminShell(){
       <button data-v="assign" class="${adminView==='assign'?'active':''}"><span class="ic">🔗</span>الربط</button>
       <button data-v="reports" class="${adminView==='reports'?'active':''}"><span class="ic">🚩</span>البلاغات</button>
       <button data-v="chats" class="${adminView==='chats'?'active':''}"><span class="ic">💬</span>المحادثات</button>
+      <button data-v="settings" class="${adminView==='settings'?'active':''}"><span class="ic">⚙️</span>الإعدادات</button>
     </div>
   </div>`;
 }
@@ -1392,9 +1569,11 @@ function adminViewHtml(){
   if(adminView==='assign') return tplAdminAssign();
   if(adminView==='reports') return tplAdminReports();
   if(adminView==='chats') return tplAdminChats();
+  if(adminView==='settings') return tplAdminSettings();
   return '';
 }
 function bindAdminEvents(){
+  bindNotifBell();
   $('#btnThemeToggle')?.addEventListener('click', ()=>{ setTheme(state.theme==='dark'?'light':'dark'); render(); });
   $('#btnLogout')?.addEventListener('click', logout);
   $all('.bottom-nav [data-v]').forEach(b=>b.addEventListener('click', ()=>{ adminView=b.dataset.v; saveNavTab('admin', adminView); render(); }));
@@ -1408,6 +1587,7 @@ function bindAdminViewEvents(){
   if(adminView==='assign'){ loadAdminAssign(); }
   if(adminView==='reports'){ loadAdminReports(); }
   if(adminView==='chats'){ loadAdminChats(); }
+  if(adminView==='settings'){ bindAdminSettingsEvents(); }
 }
 
 // سجل عمليات الإدارة — بيسجّل أهم العمليات الحساسة (توليد/حذف مفاتيح، تغيير أدوار، حذف حسابات)
@@ -2382,6 +2562,101 @@ function renderAdminChatBubble(m, namesMap){
   return `<div class="bubble them">${senderTag}${esc(m.text||'')}<div class="meta">${fmtTime(m.ts)}</div>${deletedTag}${hiddenForTag}</div>`;
 }
 
+/* =====[ SECTION: ADMIN — الإعدادات (وضع الصيانة + الإشعارات) ]===== */
+function tplAdminSettings(){
+  return `
+  <div class="section-title">وضع الصيانة 🛠️</div>
+  <div class="card" style="margin-bottom:20px">
+    <div id="maintStatusLine" style="margin-bottom:12px;font-size:14px;color:var(--text-dim)">جارِ التحميل...</div>
+    <div class="field"><label>رسالة الصيانة (بتظهر للمستخدمين)</label>
+      <textarea id="maintMsgInput" placeholder="المنصة متوقفة مؤقتًا لتحديثات ضرورية، برجاء المحاولة لاحقًا"></textarea>
+    </div>
+    <button class="btn" id="btnEnableMaint">تفعيل وضع الصيانة</button>
+    <button class="btn secondary" id="btnDisableMaint" style="margin-top:8px">إيقاف وضع الصيانة</button>
+  </div>
+
+  <div class="section-title">إرسال إشعار جماعي 📢</div>
+  <div class="card" style="margin-bottom:20px">
+    <div class="field"><label>لمن؟</label>
+      <select id="bcastTarget">
+        <option value="all">الجميع</option>
+        <option value="teacher">المعلمات فقط</option>
+        <option value="student">الطلاب فقط</option>
+      </select>
+    </div>
+    <div class="field"><label>نص الإشعار</label><textarea id="bcastText" placeholder="اكتب نص الإشعار هنا..."></textarea></div>
+    <button class="btn" id="btnSendBcast">إرسال الإشعار للجميع</button>
+  </div>
+
+  <div class="section-title">إرسال رسالة/إشعار مباشر لمستخدم 💬</div>
+  <div class="card" style="margin-bottom:16px">
+    <div class="field"><label>اسم المستخدم (username)</label><input id="directNotifUsername" placeholder="مثال: ahmed_2026"></div>
+    <div class="field"><label>نص الرسالة</label><textarea id="directNotifText" placeholder="اكتب رسالتك هنا..."></textarea></div>
+    <button class="btn" id="btnSendDirectNotif">إرسال</button>
+  </div>`;
+}
+async function bindAdminSettingsEvents(){
+  // حالة الصيانة الحالية
+  try{
+    const snap = await db.ref('siteConfig/maintenance').get();
+    const m = snap.val() || {enabled:false, message:''};
+    const line = $('#maintStatusLine');
+    if(line) line.innerHTML = m.enabled
+      ? `<span class="chip danger">مفعّل حاليًا ⚠️</span> — كل المستخدمين (عدا الأدمن) بيشوفوا شاشة الصيانة`
+      : `<span class="chip ok">غير مفعّل</span> — المنصة شغالة بشكل طبيعي`;
+    if($('#maintMsgInput')) $('#maintMsgInput').value = m.message || '';
+  }catch(e){ /* تجاهل، الأزرار هتفضل شغالة برضو */ }
+
+  $('#btnEnableMaint')?.addEventListener('click', async ()=>{
+    const msg = $('#maintMsgInput').value.trim();
+    try{
+      await db.ref('siteConfig/maintenance').set({ enabled:true, message: msg || 'المنصة متوقفة مؤقتًا لتحديثات ضرورية، برجاء المحاولة لاحقًا', updatedAt: firebase.database.ServerValue.TIMESTAMP });
+      logAdminAction('maintenance_enabled', msg);
+      toast('تم تفعيل وضع الصيانة');
+      bindAdminSettingsEvents();
+    }catch(e){ toast('تعذر التفعيل: '+(e.message||'')); }
+  });
+  $('#btnDisableMaint')?.addEventListener('click', async ()=>{
+    try{
+      await db.ref('siteConfig/maintenance').update({ enabled:false, updatedAt: firebase.database.ServerValue.TIMESTAMP });
+      logAdminAction('maintenance_disabled', '');
+      toast('تم إيقاف وضع الصيانة');
+      bindAdminSettingsEvents();
+    }catch(e){ toast('تعذر الإيقاف: '+(e.message||'')); }
+  });
+
+  $('#btnSendBcast')?.addEventListener('click', async ()=>{
+    const text = $('#bcastText').value.trim();
+    const target = $('#bcastTarget').value;
+    if(!text){ toast('اكتب نص الإشعار أولاً'); return; }
+    const btn = $('#btnSendBcast'); btn.disabled = true;
+    try{
+      await db.ref('broadcastNotifications').push({ text, target, byUid: state.user.uid, byName: state.profile?.name||'الإدارة', ts: firebase.database.ServerValue.TIMESTAMP });
+      logAdminAction('broadcast_notification', target+': '+text.slice(0,80));
+      $('#bcastText').value = '';
+      toast('تم إرسال الإشعار');
+    }catch(e){ toast('تعذر الإرسال: '+(e.message||'')); }
+    finally{ if(btn) btn.disabled=false; }
+  });
+
+  $('#btnSendDirectNotif')?.addEventListener('click', async ()=>{
+    const uname = $('#directNotifUsername').value.trim().toLowerCase().replace(/[^a-z0-9_.]/g,'');
+    const text = $('#directNotifText').value.trim();
+    if(!uname || !text){ toast('أكمل اسم المستخدم ونص الرسالة'); return; }
+    const btn = $('#btnSendDirectNotif'); btn.disabled = true;
+    try{
+      const unameSnap = await db.ref('usernames/'+uname).get();
+      const targetUid = unameSnap.val();
+      if(!targetUid){ toast('اسم المستخدم ده مش موجود'); return; }
+      await db.ref('notifications/'+targetUid).push({ type:'admin', text, fromUid: state.user.uid, fromName: state.profile?.name||'الإدارة', ts: firebase.database.ServerValue.TIMESTAMP, read:false });
+      logAdminAction('direct_notification', uname+': '+text.slice(0,80));
+      $('#directNotifText').value = '';
+      toast('تم إرسال الرسالة');
+    }catch(e){ toast('تعذر الإرسال: '+(e.message||'')); }
+    finally{ if(btn) btn.disabled=false; }
+  });
+}
+
 /* =====[ SECTION: TEACHER PANEL ]===== */
 let teacherView = 'students'; // students | profile | settings
 let teacherActiveStudent = null; // {uid, name}
@@ -2391,6 +2666,7 @@ function screenTeacherShell(){
     <div class="topbar">
       ${teacherView==='profile' ? `<button class="icon-btn back-btn" id="btnBackToStudents">➜</button>` : ''}
       <h1>${teacherView==='students'?'طلابي':teacherView==='profile'?esc(teacherActiveStudent?.name||''):'الإعدادات'}</h1>
+      ${teacherView!=='profile' ? notifBellHtml() : ''}
       ${teacherView!=='profile' ? `<button class="icon-btn" id="btnThemeToggle">${state.theme==='dark'?'☀️':'🌙'}</button>` : ''}
     </div>
     <div class="container" id="teacherContent">${teacherViewHtml()}</div>
@@ -2407,6 +2683,7 @@ function teacherViewHtml(){
   return '';
 }
 function bindTeacherEvents(){
+  bindNotifBell();
   $('#btnThemeToggle')?.addEventListener('click', ()=>{ setTheme(state.theme==='dark'?'light':'dark'); render(); });
   $all('.bottom-nav [data-v]').forEach(b=>b.addEventListener('click', ()=>{ teacherView=b.dataset.v; saveNavTab('teacher', teacherView); render(); }));
   $('#btnBackToStudents')?.addEventListener('click', ()=>{ teacherView='students'; teacherActiveStudent=null; saveNavTab('teacher','students'); render(); });
@@ -2437,12 +2714,18 @@ async function loadTodaySchedule(){
     const today = new Date().getDay();
     const snap = await db.ref('schedules/'+state.user.uid).get();
     const all = snap.val()||{};
-    const todays = Object.entries(all).filter(([,sc])=>sc.day===today).sort((a,b)=>(a[1].time||'').localeCompare(b[1].time||''));
-    el.innerHTML = todays.length ? todays.map(([sid,sc])=>`
-      <div class="list-item" data-open-student="${sid}" data-name="${esc(sc.studentName||'طالب')}">
-        <div class="avatar">${initials(sc.studentName||'')}</div>
-        <div class="li-body"><b>${esc(sc.studentName||'طالب')}</b><span>حلقة اليوم</span></div>
-        <div class="li-meta"><span class="chip ok">${sc.time}</span></div>
+    const todays = [];
+    Object.entries(all).forEach(([sid,sc])=>{
+      getStudentSessions(sc).filter(s=>s.day===today).forEach(s=>{
+        todays.push({sid, studentName: sc.studentName||'طالب', time: s.time});
+      });
+    });
+    todays.sort((a,b)=>(a.time||'').localeCompare(b.time||''));
+    el.innerHTML = todays.length ? todays.map(t=>`
+      <div class="list-item" data-open-student="${t.sid}" data-name="${esc(t.studentName)}">
+        <div class="avatar">${initials(t.studentName)}</div>
+        <div class="li-body"><b>${esc(t.studentName)}</b><span>حلقة اليوم</span></div>
+        <div class="li-meta"><span class="chip ok">${esc(t.time)}</span></div>
       </div>`).join('') : '<div class="empty-state">مفيش حلقات محددة النهاردة</div>';
     $all('[data-open-student]', el).forEach(item=>item.addEventListener('click', ()=>{
       teacherActiveStudent = {uid: item.dataset.openStudent, name: item.dataset.name};
@@ -2500,10 +2783,10 @@ function tplTeacherStudentProfile(){
     <div id="progressDisplay" style="margin-bottom:10px">${tasbihBar(0)}</div>
     <button class="btn ghost sm" id="btnEditProgress">تحديث نسبة التقدم</button>
   </div>
-  <div class="section-title">ميعاد الحلقة الأسبوعي 📅</div>
+  <div class="section-title">مواعيد الحلقة الأسبوعية 📅</div>
   <div class="card" style="margin-bottom:16px">
     <div id="scheduleDisplay" style="margin-bottom:10px;font-size:13.5px;color:var(--text-dim)">جارِ التحميل...</div>
-    <button class="btn ghost sm" id="btnEditSchedule">تحديد/تعديل الميعاد</button>
+    <button class="btn ghost sm" id="btnEditSchedule">تحديد/تعديل المواعيد</button>
   </div>
   <div class="section-title">ماذا أنجزنا اليوم؟<button class="btn sm" id="btnAddLog">+ إضافة</button></div>
   <div id="dailyLogsList"><div class="empty-state">جارِ التحميل...</div></div>`;
@@ -2529,8 +2812,9 @@ async function loadTeacherStudentProfile(){
   });
   db.ref('schedules/'+state.user.uid+'/'+sid).get().then(snap=>{
     const sc = snap.val();
+    const sessions = getStudentSessions(sc).sort((a,b)=> a.day-b.day || (a.time||'').localeCompare(b.time||''));
     const el = $('#scheduleDisplay');
-    if(el) el.textContent = sc ? `${WEEKDAY_NAMES_AR[sc.day]} — الساعة ${sc.time}` : 'لسه معملتش ميعاد ثابت للطالب ده';
+    if(el) el.textContent = sessions.length ? sessions.map(s=>`${WEEKDAY_NAMES_AR[s.day]} — ${s.time}`).join(' · ') : 'لسه معملتش أي ميعاد ثابت للطالب ده';
   });
   $('#btnOpenChat')?.addEventListener('click', ()=>openChat(sid, teacherActiveStudent.name));
   $('#btnStartCall')?.addEventListener('click', ()=>startCall(sid, teacherActiveStudent.name));
@@ -2539,30 +2823,84 @@ async function loadTeacherStudentProfile(){
   $('#btnEditSchedule')?.addEventListener('click', ()=>openScheduleModal(sid, teacherActiveStudent.name));
 }
 const WEEKDAY_NAMES_AR = ['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
-function openScheduleModal(sid, name){
-  db.ref('schedules/'+state.user.uid+'/'+sid).get().then(snap=>{
-    const sc = snap.val()||{};
-    showModal(`
-      <h3>ميعاد حلقة ${esc(name)}</h3>
-      <div class="field"><label>يوم الأسبوع</label>
-        <select id="scheduleDay">${WEEKDAY_NAMES_AR.map((d,i)=>`<option value="${i}" ${sc.day===i?'selected':''}>${d}</option>`).join('')}</select>
-      </div>
-      <div class="field"><label>الساعة</label><input type="time" id="scheduleTime" value="${sc.time||'16:00'}"></div>
-      <button class="btn" id="btnSaveSchedule">حفظ الميعاد</button>
-      ${sc.time ? `<button class="btn secondary" id="btnRemoveSchedule" style="margin-top:8px">إلغاء الميعاد الثابت</button>` : ``}`);
-    $('#btnSaveSchedule').addEventListener('click', async ()=>{
-      const day = parseInt($('#scheduleDay').value, 10);
-      const time = $('#scheduleTime').value;
-      if(!time) return;
+// عيب قديم (مُصلَح): كان مسموح بميعاد واحد بس لكل طالب (يوم + ساعة واحدة)، فمعلمة
+// عندها أكتر من حلقة أسبوعيًا مع نفس الطالب (مثلاً 3 أيام في الأسبوع) مكانش
+// بيتسجّلش. دلوقتي كل طالب ممكن يكون ليه أي عدد من المواعيد (sessions/{id}:{day,time})
+// بدل ميعاد واحد ثابت. بنفضل نقرأ الصيغة القديمة (day/time مباشرة) للتوافق مع
+// أي بيانات قديمة موجودة فعلاً في القاعدة، وأول ما المعلمة تضيف ميعاد جديد
+// بنرحّل القديم تلقائيًا لجوه sessions/ بدل ما يضيع.
+function getStudentSessions(sc){
+  if(!sc) return [];
+  const out = [];
+  if(sc.sessions){
+    Object.entries(sc.sessions).forEach(([id,s])=>{ if(s && s.time!=null && s.day!=null) out.push({id, day:s.day, time:s.time}); });
+  }
+  if(sc.day!=null && sc.time && !sc.sessions){ out.push({id:'legacy', day:sc.day, time:sc.time}); }
+  return out;
+}
+async function openScheduleModal(sid, name){
+  try{
+    const snap = await db.ref('schedules/'+state.user.uid+'/'+sid).get();
+    renderScheduleModal(sid, name, snap.val()||{}, true);
+  }catch(e){ toast('تعذر تحميل المواعيد: '+(e.message||'')); }
+}
+function renderScheduleModal(sid, name, sc, isInitial){
+  const sessions = getStudentSessions(sc).sort((a,b)=> a.day-b.day || (a.time||'').localeCompare(b.time||''));
+  const rows = sessions.length ? sessions.map(s=>`
+    <div class="list-item" data-session-row="${esc(s.id)}">
+      <div class="li-body"><b>${WEEKDAY_NAMES_AR[s.day]}</b><span>الساعة ${esc(s.time)}</span></div>
+      <button class="btn sm danger" data-remove-session="${esc(s.id)}">حذف</button>
+    </div>`).join('') : '<div class="empty-state">لسه معملتش أي ميعاد لحد دلوقتي</div>';
+  const html = `
+    <h3>مواعيد حلقة ${esc(name)}</h3>
+    <div id="scheduleSessionsList" style="margin-bottom:16px">${rows}</div>
+    <div class="section-title" style="margin-top:0">إضافة ميعاد جديد</div>
+    <div class="field"><label>يوم الأسبوع</label>
+      <select id="scheduleDay">${WEEKDAY_NAMES_AR.map((d,i)=>`<option value="${i}">${d}</option>`).join('')}</select>
+    </div>
+    <div class="field"><label>الساعة</label><input type="time" id="scheduleTime" value="16:00"></div>
+    <button class="btn" id="btnAddSession">+ إضافة الميعاد</button>`;
+  if(isInitial) showModal(html); else updateModalContent(html);
+  $('#btnAddSession').addEventListener('click', async ()=>{
+    const day = parseInt($('#scheduleDay').value, 10);
+    const time = $('#scheduleTime').value;
+    if(!time) return;
+    const btn = $('#btnAddSession'); btn.disabled = true;
+    try{
+      const base = 'schedules/'+state.user.uid+'/'+sid;
+      const updates = {}; updates[base+'/studentName'] = name;
+      // ترحيل الميعاد القديم (لو موجود بالصيغة القديمة ولسه ماترحّلش) قبل إضافة أي ميعاد جديد
+      if(sc.day!=null && sc.time && !sc.sessions){
+        const legacyKey = db.ref(base+'/sessions').push().key;
+        updates[base+'/sessions/'+legacyKey] = { day: sc.day, time: sc.time };
+        updates[base+'/day'] = null; updates[base+'/time'] = null;
+      }
+      const newKey = db.ref(base+'/sessions').push().key;
+      updates[base+'/sessions/'+newKey] = { day, time };
+      await db.ref().update(updates);
+      toast('تم إضافة الميعاد');
+      const freshSnap = await db.ref(base).get();
+      sc = freshSnap.val()||{};
+      renderScheduleModal(sid, name, sc, false);
+      if(teacherView==='profile') loadTeacherStudentProfile();
+      if(teacherView==='students') loadTodaySchedule();
+    }catch(e){ toast('تعذر الحفظ: '+(e.message||'')); }
+    finally{ if(btn) btn.disabled=false; }
+  });
+  $all('[data-remove-session]').forEach(rBtn=>{
+    rBtn.addEventListener('click', async ()=>{
+      const sessId = rBtn.dataset.removeSession;
+      const base = 'schedules/'+state.user.uid+'/'+sid;
       try{
-        await db.ref('schedules/'+state.user.uid+'/'+sid).set({ day, time, studentName: name });
-        hideModal(); toast('تم حفظ الميعاد');
+        if(sessId==='legacy'){ await db.ref(base).update({day:null, time:null}); }
+        else{ await db.ref(base+'/sessions/'+sessId).remove(); }
+        toast('تم حذف الميعاد');
+        const freshSnap = await db.ref(base).get();
+        sc = freshSnap.val()||{};
+        renderScheduleModal(sid, name, sc, false);
         if(teacherView==='profile') loadTeacherStudentProfile();
-      }catch(e){ toast('تعذر الحفظ: '+(e.message||'')); }
-    });
-    $('#btnRemoveSchedule')?.addEventListener('click', async ()=>{
-      try{ await db.ref('schedules/'+state.user.uid+'/'+sid).remove(); hideModal(); toast('تم إلغاء الميعاد'); if(teacherView==='profile') loadTeacherStudentProfile(); }
-      catch(e){ toast('تعذر الحذف: '+(e.message||'')); }
+        if(teacherView==='students') loadTodaySchedule();
+      }catch(e){ toast('تعذر الحذف: '+(e.message||'')); }
     });
   });
 }
@@ -2742,6 +3080,7 @@ function screenStudentShell(){
   return `
   <div class="screen active">
     <div class="topbar"><h1>${studentView==='home'?'رواسخ':'الإعدادات'}</h1>
+      ${notifBellHtml()}
       <button class="icon-btn" id="btnThemeToggle">${state.theme==='dark'?'☀️':'🌙'}</button>
     </div>
     <div class="container" id="studentContent">${studentViewHtml()}</div>
@@ -2757,6 +3096,7 @@ function studentViewHtml(){
   return '';
 }
 function bindStudentEvents(){
+  bindNotifBell();
   $('#btnThemeToggle')?.addEventListener('click', ()=>{ setTheme(state.theme==='dark'?'light':'dark'); render(); });
   $all('.bottom-nav [data-v]').forEach(b=>b.addEventListener('click', ()=>{ studentView=b.dataset.v; saveNavTab('student', studentView); render(); }));
   bindStudentViewEvents();
@@ -2913,6 +3253,7 @@ function openChat(otherUid, otherName){
   saveChatWith(state.chatWith); // نحفظها عشان لو المستخدم عمل Refresh يرجع لنفس الشات
   pushNav('chat');
   render();
+  markChatNotificationsRead(otherUid);
 }
 function closeChat(fromBack){
   teardownChat();
@@ -3249,6 +3590,7 @@ async function sendChatMessage(){
   try{
     await db.ref('chatThreads/'+chatId+'/messages').push(payload);
     bumpMessagesCounter();
+    pushMessageNotification(o.uid, text);
     setReplyTo(null);
     if(state.myTypingRef) state.myTypingRef.remove();
     if(state.typingTimeout){ clearTimeout(state.typingTimeout); state.typingTimeout=null; }
@@ -3362,6 +3704,7 @@ async function forwardMessageTo(targetUid, m){
   try{
     await db.ref('chatThreads/'+chatId+'/messages').push(payload);
     bumpMessagesCounter();
+    pushMessageNotification(targetUid, msgPreviewText(m));
     hideModal();
     toast('تم توجيه الرسالة');
   }catch(e){ toast('تعذر توجيه الرسالة: '+(e.message||'')); }
@@ -3593,6 +3936,7 @@ async function uploadChatFile(file, opts){
     if(isAudio && opts.duration) payload.duration = opts.duration;
     await db.ref('chatThreads/'+chatId+'/messages').push(payload);
     bumpMessagesCounter();
+    pushMessageNotification(o.uid, msgPreviewText(payload));
   }catch(e){
     console.error(e);
     toast('تعذر رفع الملف: ' + (e.message||''));
