@@ -1460,16 +1460,20 @@ async function loadAdminStats(){
     safeGet('users', db.ref('users')), safeGet('codes', db.ref('codes')),
     safeGet('security_alerts', db.ref('security_alerts').limitToLast(5)),
     safeGet('presence', db.ref('presence')), safeGet('progress', db.ref('progress')),
-    safeGet('assignments', db.ref('assignments')), safeGet('calls', db.ref('calls'))
+    safeGet('assignments', db.ref('assignments')), safeGet('calls', db.ref('calls')),
+    safeGet('ratingsSummary', db.ref('ratingsSummary')), safeGet('finance', db.ref('finance'))
   ]);
   const failed = results.filter(r=>r.error).map(r=>r.error);
   if(failed.length){ throw new Error(failed.join(' | ')); }
-  const [usersSnap, codesSnap, alertsSnap, presenceSnap, progressSnap, assignSnap, callsSnap] = results.map(r=>r.snap);
+  const [usersSnap, codesSnap, alertsSnap, presenceSnap, progressSnap, assignSnap, callsSnap, ratingsSnap, financeSnap] = results.map(r=>r.snap);
   const users = usersSnap.val()||{};
   const presence = presenceSnap.val()||{};
   const progress = progressSnap.val()||{};
   const assignments = assignSnap.val()||{};
   const calls = callsSnap.val()||{};
+  const ratingsSummary = ratingsSnap.val()||{};
+  const finance = financeSnap.val()||{};
+  const totalOwed = Object.values(finance).reduce((s,f)=>s+(f.balance||0), 0);
   const userEntries = Object.entries(users);
 
   let teachers=0, students=0, admins=0, activeSubs=0, expiredSubs=0, onlineCount=0;
@@ -1511,7 +1515,8 @@ async function loadAdminStats(){
     <div class="stat-box"><b>${Object.keys(codes).length}</b><span>إجمالي المفاتيح</span></div>
     <div class="stat-box"><b>${activeSubs}</b><span>اشتراكات فعّالة</span></div>
     <div class="stat-box"><b>${messagesCount}</b><span>رسائل الشات</span></div>
-    <div class="stat-box"><b>${Object.keys(calls).length}</b><span>مكالمات</span></div>`;
+    <div class="stat-box"><b>${Object.keys(calls).length}</b><span>مكالمات</span></div>
+    <div class="stat-box"><b>${totalOwed.toLocaleString('ar-EG')}</b><span>إجمالي مستحقات المعلمات (ج.م)</span></div>`;
 
   // أحدث التسجيلات
   const recent = [...userEntries].sort((a,b)=>(b[1].createdAt||0)-(a[1].createdAt||0)).slice(0,5);
@@ -1533,13 +1538,13 @@ async function loadAdminStats(){
       <div class="li-meta"><span style="font-size:11px">${pct}%</span></div>
     </div>`).join('') : '<div class="empty-state">لا يوجد طلاب بعد</div>';
 
-  // أكثر المعلمات نشاطاً (حسب عدد الطلاب المخصصين كمؤشر حِمل العمل)
+  // أكثر المعلمات نشاطاً (حسب عدد الطلاب المخصصين كمؤشر حِمل العمل) + متوسط تقييمها
   const topTea = userEntries.filter(([,u])=>u.role==='teacher')
-    .map(([id,u])=>({id,u,count:Object.keys(assignments[id]||{}).length}))
+    .map(([id,u])=>({id,u,count:Object.keys(assignments[id]||{}).length, rs: ratingsSummary[id]||{}}))
     .sort((a,b)=>b.count-a.count).slice(0,5);
-  $('#topTeachers').innerHTML = topTea.length ? topTea.map(({id,u,count})=>`
+  $('#topTeachers').innerHTML = topTea.length ? topTea.map(({id,u,count,rs})=>`
     <div class="list-item"><div class="avatar">${initials(u.name)}</div>
-      <div class="li-body"><b>${esc(u.name)}</b><span>${count} طالب مخصص</span></div>
+      <div class="li-body"><b>${esc(u.name)}</b><span>${count} طالب مخصص · ${starsAvgHtml(rs.sum, rs.count)}</span></div>
       <div class="li-meta"><span class="chip ${presence[id]&&presence[id].online?'ok':'neutral'}">${presence[id]&&presence[id].online?'متصلة':'غير متصلة'}</span></div>
     </div>`).join('') : '<div class="empty-state">لا توجد معلمات بعد</div>';
 
@@ -1569,7 +1574,7 @@ async function loadAdminStats(){
   // سجل العمليات الأخيرة (توليد/حذف مفاتيح، تغيير أدوار، حذف حسابات)
   db.ref('adminAuditLog').limitToLast(15).get().then(snap=>{
     const logs = Object.entries(snap.val()||{}).reverse();
-    const labels = { generate_key:'🔑 توليد مفتاح', delete_keys:'🗑️ حذف مفاتيح', change_role:'🔄 تغيير دور', delete_user:'🗑️ حذف حساب' };
+    const labels = { generate_key:'🔑 توليد مفتاح', delete_keys:'🗑️ حذف مفاتيح', change_role:'🔄 تغيير دور', delete_user:'🗑️ حذف حساب', teacher_finance:'💰 تعديل رصيد معلمة' };
     $('#adminAuditPreview').innerHTML = logs.length ? logs.map(([id,l])=>`
       <div class="list-item"><div class="li-body"><b>${labels[l.action]||l.action}</b><span>${esc(l.details||'')} · بواسطة ${esc(l.byName||'')} · ${fmtDate(l.ts)} ${fmtTime(l.ts)}</span></div></div>`).join('')
       : '<div class="empty-state">لا توجد عمليات مسجّلة بعد</div>';
@@ -1879,10 +1884,12 @@ let usersFilter='all';
 let usersState = { search:'', sort:'newest', page:1 };
 const USERS_PAGE_SIZE = 12;
 let _usersCache = {};
+let _financeCache = {};
 async function loadAdminUsers(){
   try{
-  const snap = await db.ref('users').get();
-  _usersCache = snap.val()||{};
+  const [usersSnap, financeSnap] = await Promise.all([ db.ref('users').get(), db.ref('finance').get() ]);
+  _usersCache = usersSnap.val()||{};
+  _financeCache = financeSnap.val()||{};
   renderUsersList(_usersCache);
   $all('.segmented [data-f]').forEach(b=>b.addEventListener('click', ()=>{
     usersFilter=b.dataset.f; usersState.page=1; $all('.segmented [data-f]').forEach(x=>x.classList.remove('active')); b.classList.add('active');
@@ -1946,11 +1953,13 @@ function renderUsersList(users){
       <div class="li-body"><b>${esc(u.name)}</b><span>@${esc(u.username)} · ${u.role==='teacher'?'معلمة':u.role==='admin'?'أدمن':'طالب'}</span></div>
       <div class="li-meta">
         <span class="chip ${u.status==='active'?'ok':u.status==='banned'?'danger':'warn'}">${u.status==='active'?'مفعّل':u.status==='banned'?'موقوف':'قيد المراجعة'}</span>
+        ${u.role==='teacher' ? `<span class="chip ${((_financeCache[id]&&_financeCache[id].balance)||0)>0?'ok':'neutral'}">💰 ${((_financeCache[id]&&_financeCache[id].balance)||0).toLocaleString('ar-EG')} ج.م</span>` : ''}
         ${u.role!=='admin' ? `<button class="btn sm ${u.status==='banned'?'ghost':'danger'}" data-toggleban="${id}" data-cur="${u.status}">${u.status==='banned'?'رفع الإيقاف':'إيقاف'}</button>` : ''}
       </div>
     </div>
     ${u.role!=='admin' ? `
     <div class="key-actions-row" style="margin-bottom:10px">
+      ${u.role==='teacher' ? `<button class="btn sm" data-finance="${id}" data-name="${esc(u.name)}">💰 إدارة الرصيد</button>` : ''}
       <button class="btn sm ghost" data-changerole="${id}">${u.role==='teacher'?'تحويل لطالب':'تحويل لمعلمة'}</button>
       ${u.role==='student' ? `<button class="btn sm ghost" data-reassign="${id}">نقل لمعلمة أخرى</button>` : ''}
       <button class="btn sm ghost" data-resetpass="${id}">إعادة تعيين كلمة المرور</button>
@@ -1971,6 +1980,7 @@ function renderUsersList(users){
     toast(newStatus==='banned'?'تم إيقاف الحساب':'تم تفعيل الحساب');
     loadAdminUsers();
   }));
+  $all('[data-finance]').forEach(b=>b.addEventListener('click', ()=>openTeacherFinanceModal(b.dataset.finance, b.dataset.name)));
   $all('[data-changerole]').forEach(b=>b.addEventListener('click', ()=>changeUserRole(b.dataset.changerole, users[b.dataset.changerole])));
   $all('[data-reassign]').forEach(b=>b.addEventListener('click', ()=>openReassignTeacherModal(b.dataset.reassign, users[b.dataset.reassign])));
   $all('[data-resetpass]').forEach(b=>b.addEventListener('click', ()=>resetUserPassword(users[b.dataset.resetpass])));
@@ -2003,6 +2013,68 @@ async function changeUserRole(uid, u){
     toast('تم تحويل الدور');
     await loadAdminUsers();
   }catch(e){ toast('تعذر تحويل الدور: '+(e.message||'')); }
+}
+// إدارة رصيد/مستحقات المعلمة — الأدمن يقدر يشوف الرصيد الحالي وآخر الحركات، ويضيف
+// أو يخصم مبلغ مع سبب اختياري. كل حركة بتتسجل في finance/{teacherUid}/transactions
+// كسجل ثابت (append-only)، والرصيد الحالي بيتحدّث كمجموع بـ increment (عملية ذرّية
+// من فايربيس، فمينفعش حركتين يحصل بينهم تعارض حتى لو حصلوا في نفس اللحظة بالظبط).
+function openTeacherFinanceModal(teacherUid, teacherName){
+  showModal(`
+    <h3>رصيد ${esc(teacherName)}</h3>
+    <div class="card" style="margin-bottom:14px;text-align:center">
+      <div style="font-size:12px;color:var(--text-dim)">الرصيد الحالي</div>
+      <div id="financeBalanceDisplay" style="font-size:26px;font-weight:800;margin-top:4px">…</div>
+    </div>
+    <div class="field"><label>المبلغ (جنيه)</label><input id="financeAmount" type="number" step="0.01" placeholder="مثال: 500"></div>
+    <div class="field"><label>سبب الحركة (اختياري)</label><input id="financeNote" placeholder="مثال: مستحقات شهر يوليو"></div>
+    <div style="display:flex;gap:8px">
+      <button class="btn" id="btnFinanceAdd" style="flex:1">➕ إضافة</button>
+      <button class="btn danger" id="btnFinanceDeduct" style="flex:1">➖ خصم</button>
+    </div>
+    <div class="section-title" style="margin-top:16px">آخر الحركات</div>
+    <div id="financeTxList"><div class="empty-state">جارِ التحميل...</div></div>`);
+
+  const finRef = db.ref('finance/'+teacherUid);
+  async function refreshFinanceModal(){
+    const snap = await finRef.get();
+    const data = snap.val()||{};
+    const bal = data.balance||0;
+    const balEl = $('#financeBalanceDisplay');
+    if(balEl) balEl.textContent = bal.toLocaleString('ar-EG')+' ج.م';
+    const txs = Object.entries(data.transactions||{}).sort((a,b)=>(b[1].ts||0)-(a[1].ts||0)).slice(0,15);
+    const listEl = $('#financeTxList');
+    if(listEl){
+      listEl.innerHTML = txs.length ? txs.map(([,t])=>`
+        <div class="list-item">
+          <div class="li-body"><b style="color:${t.amount>=0?'var(--success)':'var(--danger)'}">${t.amount>=0?'+':''}${t.amount.toLocaleString('ar-EG')} ج.م</b><span>${esc(t.note||'—')}</span></div>
+          <div class="li-meta"><span class="chip neutral">${fmtDate(t.ts)}</span></div>
+        </div>`).join('') : '<div class="empty-state">لا توجد حركات بعد</div>';
+    }
+  }
+  refreshFinanceModal();
+
+  async function applyFinanceDelta(sign){
+    const raw = parseFloat($('#financeAmount').value);
+    if(!raw || raw<=0){ toast('اكتب مبلغ صحيح أكبر من صفر'); return; }
+    const amount = sign * raw;
+    const note = $('#financeNote').value.trim();
+    const btnAdd = $('#btnFinanceAdd'), btnDed = $('#btnFinanceDeduct');
+    if(btnAdd) btnAdd.disabled = true; if(btnDed) btnDed.disabled = true;
+    try{
+      await finRef.child('transactions').push({
+        amount, note: note||null, byUid: state.user.uid, byName: state.profile?.name||'', ts: firebase.database.ServerValue.TIMESTAMP
+      });
+      await finRef.update({ balance: firebase.database.ServerValue.increment(amount), updatedAt: firebase.database.ServerValue.TIMESTAMP });
+      logAdminAction('teacher_finance', `${sign>0?'إضافة':'خصم'} ${raw} ج.م لـ ${teacherName}${note?(' — '+note):''}`);
+      $('#financeAmount').value=''; $('#financeNote').value='';
+      toast(sign>0?'تم إضافة المبلغ':'تم خصم المبلغ');
+      await refreshFinanceModal();
+      loadAdminUsers(); // تحديث الشريحة (chip) في القائمة الخلفية بعد قفل الـ modal
+    }catch(e){ toast('تعذر تنفيذ العملية: '+(e.message||'')); }
+    finally{ if(btnAdd) btnAdd.disabled=false; if(btnDed) btnDed.disabled=false; }
+  }
+  $('#btnFinanceAdd').addEventListener('click', ()=>applyFinanceDelta(1));
+  $('#btnFinanceDeduct').addEventListener('click', ()=>applyFinanceDelta(-1));
 }
 // نقل طالب لمعلمة أخرى (بديل سريع لتبويب "الربط" الكامل، من نفس شاشة المستخدمين)
 function openReassignTeacherModal(studentUid, student){
@@ -2080,6 +2152,8 @@ async function deleteUserCompletely(uid, u){
       const myStudents = Object.keys(aSnap.val()||{});
       peers = myStudents;
       updates['assignments/'+uid] = null;
+      updates['schedules/'+uid] = null; // جدول حلقات المعلمة بالكامل
+      updates['finance/'+uid] = null; // ملاحظة: بيمسح سجل الرصيد والحركات كمان — لو محتاجين نحتفظ بالسجل المالي للأرشيف حتى بعد حذف الحساب، شيلوا السطر ده
       for(const sid of myStudents){
         const stSnap = await db.ref('studentTeacher/'+sid).get();
         if(stSnap.val()===uid) updates['studentTeacher/'+sid] = null;
@@ -2087,7 +2161,7 @@ async function deleteUserCompletely(uid, u){
     } else if(u.role==='student'){
       const stSnap = await db.ref('studentTeacher/'+uid).get();
       const myTeacher = stSnap.val();
-      if(myTeacher){ peers = [myTeacher]; updates['assignments/'+myTeacher+'/'+uid] = null; }
+      if(myTeacher){ peers = [myTeacher]; updates['assignments/'+myTeacher+'/'+uid] = null; updates['schedules/'+myTeacher+'/'+uid] = null; }
       updates['studentTeacher/'+uid] = null;
     }
 
@@ -2705,6 +2779,12 @@ async function findMyTeacher(){
   myTeacherCache = snap.val() || null;
   return myTeacherCache;
 }
+// بيرجّع HTML صغير لعرض متوسط النجوم + عدد التقييمات، أو نص "لسه معملتش تقييمات"
+function starsAvgHtml(sum, count){
+  if(!count) return `<span style="font-size:12px;color:var(--text-dim)">لا توجد تقييمات بعد</span>`;
+  const avg = sum/count;
+  return `<span style="font-size:13px">⭐ ${avg.toFixed(1)} <span style="color:var(--text-dim);font-size:11px">(${count} تقييم)</span></span>`;
+}
 async function loadStudentHome(){
   const tid = await findMyTeacher();
   if(!tid){
@@ -2715,14 +2795,15 @@ async function loadStudentHome(){
     $('#btnOpenAdhkar')?.addEventListener('click', openAdhkarModal);
     return;
   }
-  const [tSnap, progSnap, presSnap] = await Promise.all([db.ref('users/'+tid).get(), db.ref('progress/'+state.user.uid).get(), db.ref('presence/'+tid).get()]);
+  const [tSnap, progSnap, presSnap, ratingSnap] = await Promise.all([db.ref('users/'+tid).get(), db.ref('progress/'+state.user.uid).get(), db.ref('presence/'+tid).get(), db.ref('ratingsSummary/'+tid).get()]);
   const t = tSnap.val()||{name:'المعلمة'}; const pr = progSnap.val()||{}; const pres = presSnap.val()||{};
+  const rs = ratingSnap.val()||{};
   $('#studentHomeArea').innerHTML = renderPrayerWidgetHtml() +
     `<button class="adhkar-open-btn" id="btnOpenAdhkar">📿 <span>الأذكار (الصباح والمساء)</span></button>
     <div class="card" style="margin-bottom:16px">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
         <div class="avatar" style="width:56px;height:56px;font-size:20px">${initials(t.name)}<span class="dot ${pres.online?'online':''}"></span></div>
-        <div style="flex:1"><b style="font-size:16px">${esc(t.name)}</b><div style="font-size:12px;color:var(--text-dim)">${pres.online?'متصلة الآن':'غير متصلة'}</div></div>
+        <div style="flex:1"><b style="font-size:16px">${esc(t.name)}</b><div style="font-size:12px;color:var(--text-dim)">${pres.online?'متصلة الآن':'غير متصلة'}</div>${starsAvgHtml(rs.sum, rs.count)}</div>
       </div>
       <div style="display:flex;gap:10px">
         <button class="btn" id="btnOpenChatS">💬 محادثة</button>
@@ -2760,17 +2841,32 @@ function openRatingModal(teacherUid){
   $('#btnSubmitRating').addEventListener('click', async ()=>{
     if(!stars){ toast('اختر عدد النجوم'); return; }
     await db.ref('ratings/'+teacherUid+'/'+state.user.uid).push({ stars, note: $('#rateNote').value.trim()||null, ts: firebase.database.ServerValue.TIMESTAMP });
+    // تحديث متوسط التقييم الإجمالي للمعلمة (sum/count) بعملية transaction ذرّية —
+    // بدل ما كل حد يحسب المتوسط بنفسه من قراءة شجرة ratings كاملة (اللي أصلاً محدش
+    // غير الأدمن أو المعلمة نفسها يقدر يقراها)، بنخزن رقمين خفيفين أي حد يقدر يقراهم.
+    try{
+      await db.ref('ratingsSummary/'+teacherUid).transaction(cur=>{
+        const c = cur || {sum:0, count:0};
+        return { sum: (c.sum||0) + stars, count: (c.count||0) + 1 };
+      });
+    }catch(_){ /* المتوسط تحسين عرض إضافي فقط — مايوقفش تسجيل التقييم الأساسي لو فشل */ }
     hideModal(); toast('شكرًا لتقييمك ⭐');
   });
 }
 
 /* =====[ SECTION: SETTINGS (مشترك) ]===== */
 function tplSettings(){
+  const isTeacher = state.profile.role==='teacher';
   return `
   <div class="card" style="margin-bottom:16px;display:flex;align-items:center;gap:14px">
     <div class="avatar" style="width:56px;height:56px;font-size:20px">${initials(state.profile.name)}</div>
     <div><b style="font-size:16px">${esc(state.profile.name)}</b><div style="font-size:12px;color:var(--text-dim)">@${esc(state.profile.username)}</div></div>
   </div>
+  ${isTeacher ? `
+  <div class="section-title">رصيدي وتقييمي</div>
+  <div class="card" style="margin-bottom:16px" id="teacherSelfFinanceCard">
+    <div class="empty-state">جارِ التحميل...</div>
+  </div>` : ''}
   <div class="section-title">المظهر</div>
   <div class="card" style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:center">
     <span>الوضع الليلي</span>
@@ -2792,6 +2888,23 @@ function bindSettingsEvents(){
     try{ await state.user.updatePassword(np); toast('تم تحديث كلمة المرور'); $('#newPass').value=''; }
     catch(e){ toast('أعد تسجيل الدخول ثم حاول مرة أخرى'); }
   });
+  // المعلمة تقدر تشوف رصيدها الحالي ومتوسط تقييمها بس (بدون تعديل — التعديل للأدمن فقط)
+  if(state.profile.role==='teacher'){
+    const uid = state.user.uid;
+    Promise.all([db.ref('finance/'+uid).get(), db.ref('ratingsSummary/'+uid).get()]).then(([finSnap, rateSnap])=>{
+      const fin = finSnap.val()||{}; const rs = rateSnap.val()||{};
+      const card = $('#teacherSelfFinanceCard');
+      if(card) card.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <span style="font-size:13px;color:var(--text-dim)">الرصيد المستحق</span>
+          <b style="font-size:20px">${(fin.balance||0).toLocaleString('ar-EG')} ج.م</b>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:13px;color:var(--text-dim)">متوسط تقييم الطلاب</span>
+          ${starsAvgHtml(rs.sum, rs.count)}
+        </div>`;
+    }).catch(()=>{ const card=$('#teacherSelfFinanceCard'); if(card) card.innerHTML='<div class="empty-state">تعذر تحميل البيانات</div>'; });
+  }
 }
 
 /* =====[ SECTION: CHAT SYSTEM ]===== */
