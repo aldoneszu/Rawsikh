@@ -571,6 +571,10 @@ let state = {
   user:null, profile:null, deviceId:null, theme:'light',
   currentChatWith:null, chatListenerRef:null, msgsRef:null, presenceRef:null, chatPresenceRef:null,
   agoraClient:null, localAudioTrack:null, currentCallId:null, callTimerInt:null, callSeconds:0,
+  // === حالة نظام المكالمات (Call State Machine) ===
+  // idle -> ringing -> connecting -> connected -> ending -> ended -> idle
+  // بتستخدم لمنع أي انتقال غلط أو تنفيذ مكرر لـ join/leave/overlay.
+  callPhase:'idle', _joinLock:null, _joinedChannel:null, _endingCallId:null,
   studentsCache:{}, teachersCache:{}, route:'loading', routeParams:{},
   maintenance:{enabled:false, message:''} // حالة وضع الصيانة — بتتحدث لحظيًا من siteConfig/maintenance حتى قبل تسجيل الدخول
 };
@@ -3948,6 +3952,33 @@ async function uploadChatFile(file, opts){
 }
 
 /* =====[ SECTION: CALLS (AGORA) ]===== */
+// ---- DEBUG LOGGING HELPERS (لوجات تشخيصية فقط — مفيش أي تعديل على المنطق) ----
+function _callDebugSnapshot(extra){
+  return {
+    appId: (typeof AGORA_APP_ID!=='undefined' ? AGORA_APP_ID : undefined),
+    channel: (extra && extra.channel) || state._joinedChannel || null,
+    uid: (extra && extra.uid) || (state.user && state.user.uid) || null,
+    tokenLength: (extra && typeof extra.tokenLength==='number') ? extra.tokenLength : undefined,
+    callPhase: state.callPhase,
+    firebaseCallStatus: state._lastFirebaseCallStatus,
+    currentCallId: state.currentCallId,
+    ...extra
+  };
+}
+function _logStep(label, phase, extra){
+  console.log(`[AGORA-DEBUG] ${label} — ${phase}`, _callDebugSnapshot(extra));
+}
+function _logError(label, err){
+  console.error(`[AGORA-DEBUG] ${label} — ERROR`, {
+    functionName: label,
+    errorObject: err,
+    code: err && err.code,
+    message: err && err.message,
+    stack: err && err.stack,
+    ..._callDebugSnapshot()
+  });
+}
+// ---- END DEBUG LOGGING HELPERS ----
 function hashUidToNumber(uid){
   let h = 0; for(let i=0;i<uid.length;i++){ h = (h*31 + uid.charCodeAt(i)) >>> 0; }
   return (h % 2147483000) + 1;
@@ -3962,14 +3993,25 @@ async function startCall(otherUid, otherName){
   try{
     await db.ref('calls/'+callId).set({ from: state.user.uid, to: otherUid, status:'ringing', channel, ts: firebase.database.ServerValue.TIMESTAMP });
   }catch(e){ toast('تعذر بدء المكالمة'); return; }
+  state.callPhase = 'ringing';
   openCallOverlay({uid:otherUid, name:otherName}, 'outgoing', callId, channel);
   const callRef = db.ref('calls/'+callId);
+  // عيب مُصلَح: الاستماع كان بـ .on('value') على الـ Node كاملة calls/{callId}،
+  // وأي تحديث فرعي زي muted/{uid} أو أي حقل تاني كان بيعيد تشغيل نفس الكولباك
+  // بنفس الـ status القديم (مثلاً 'accepted' لسه موجودة) فيعيد استدعاء
+  // joinAgoraChannel() من الصفر — يقفل جلسة Agora الشغالة ويفتح واحدة جديدة
+  // (Client + Microphone Track جديدين) في كل مرة حد يعمل كتم/فك كتم مثلاً.
+  // الحل: نتتبّع آخر status اتعالج فعليًا ومنعملش أي إجراء إلا لو *اتغيّر*.
+  let lastStatus = 'ringing';
   const cb = snap=>{
     const c = snap.val();
-    if(!c) return;
+    if(!c || c.status===lastStatus) return;
+    lastStatus = c.status;
+    state._lastFirebaseCallStatus = c.status; // للّوج فقط — مفيش تأثير على أي منطق
+    console.log('[AGORA-DEBUG] Firebase call status changed (startCall listener)', {callId, status: c.status, channel});
     if(c.status==='rejected'){ toast(otherName+' رفض/ت المكالمة'); endCallUI(callId); }
-    if(c.status==='accepted'){ joinAgoraChannel(channel); }
-    if(c.status==='ended'){ endCallUI(callId); }
+    else if(c.status==='accepted'){ joinAgoraChannel(channel); }
+    else if(c.status==='ended'){ endCallUI(callId); }
   };
   callRef.on('value', cb);
   state._activeCallSessionWatcher = {callId, ref: callRef, cb};
@@ -4009,9 +4051,15 @@ function setupCallListenersForPeers(peers){
   peers.forEach(peerUid=>{
     const callId = pairId(myUid, peerUid);
     const ref = db.ref('calls/'+callId);
+    // نفس إصلاح الاستماع في startCall: منتصرفش إلا لو الـ status اتغيّر فعليًا،
+    // عشان تحديثات زي muted متعملش إعادة تنفيذ لـ showIncomingBanner/endCallUI.
+    let lastStatus = null;
     const cb = snap=>{
       const c = snap.val();
-      if(!c) return;
+      if(!c || c.status===lastStatus) return;
+      lastStatus = c.status;
+      state._lastFirebaseCallStatus = c.status; // للّوج فقط — مفيش تأثير على أي منطق
+      console.log('[AGORA-DEBUG] Firebase call status changed (incoming listener)', {callId, status: c.status});
       if(c.status==='ringing' && c.to===myUid){
         // لو أنا أصلاً في مكالمة شغالة (مع أي شخص تاني)، ارفض المكالمة الجديدة
         // تلقائيًا فورًا بدل ما أعرض بانر فوقها — عشان مكالمتين ميتقابلوش خالص
@@ -4071,6 +4119,12 @@ async function showIncomingBanner(fromUid, callId, channel){
 function hideIncomingBanner(){ $('#incomingBanner').classList.remove('active'); }
 
 function openCallOverlay(peer, mode, callId, channel){
+  // حماية: منع إعادة إنشاء/Render عناصر المكالمة لو الأوفرلاي أصلاً مفتوح
+  // ومتصل بنفس الـ callId (مثلاً لو الدالة دي اتنادت أكتر من مرة بالغلط).
+  if(state.currentCallId===callId && $('#callOverlay').classList.contains('active')){
+    console.warn('[calls] openCallOverlay: تجاهل استدعاء مكرر لنفس المكالمة', callId);
+    return;
+  }
   state.currentCallId = callId;
   const overlay = $('#callOverlay');
   overlay.innerHTML = `
@@ -4104,53 +4158,122 @@ function openCallOverlay(peer, mode, callId, channel){
 // بيجيب توكن دخول من سيرفر التوكنات (Vercel). لازم يتنفذ قبل أي join على Agora
 // بعد ما تفعّل App Certificate، لأن الدخول بـ null بقى مرفوض من Agora.
 async function fetchAgoraToken(channel, numericUid){
-  const url = `${TOKEN_SERVER_URL}?channel=${encodeURIComponent(channel)}&uid=${numericUid}`;
-  const resp = await fetch(url);
-  if(!resp.ok){ throw new Error('token-server-error'); }
-  const data = await resp.json();
-  if(!data.token){ throw new Error('no-token-in-response'); }
-  return data.token;
+  _logStep('fetchAgoraToken', 'BEFORE', {channel, uid: numericUid});
+  try{
+    const url = `${TOKEN_SERVER_URL}?channel=${encodeURIComponent(channel)}&uid=${numericUid}`;
+    const resp = await fetch(url);
+    if(!resp.ok){ throw new Error('token-server-error'); }
+    const data = await resp.json();
+    if(!data.token){ throw new Error('no-token-in-response'); }
+    _logStep('fetchAgoraToken', 'AFTER (success)', {channel, uid: numericUid, tokenLength: data.token.length});
+    return data.token;
+  }catch(e){
+    _logError('fetchAgoraToken', e);
+    throw e;
+  }
 }
 async function joinAgoraChannel(channel){
+  // === حماية 1: منع تنفيذ join وهو أصلاً جاري، أو بعد نجاحه لنفس القناة ===
+  // ده أهم إصلاح في الملف كله: كان ممكن joinAgoraChannel() تتنادى أكتر من
+  // مرة لنفس المكالمة (بسبب تحديثات Firebase غير متعلقة بالـ status، أو
+  // نقرة مزدوجة، أو استدعاء متزامن من مكانين)، فكانت بتقفل الـ Client الشغال
+  // وتفتح Client جديد + Microphone Track جديد في نص المكالمة المتصلة فعلاً.
+  if(state.callPhase==='connecting'){
+    console.warn('[calls] joinAgoraChannel: تجاهل — في Join جاري بالفعل لنفس المكالمة');
+    return;
+  }
+  if(state.callPhase==='connected' && state._joinedChannel===channel && state.agoraClient){
+    console.warn('[calls] joinAgoraChannel: تجاهل — متصل بالفعل بنفس القناة', channel);
+    return;
+  }
+  // === حماية 2: قفل تسلسلي (lock) يمنع أي Race Condition بين استدعاءات متزامنة ===
+  if(state._joinLock){
+    console.warn('[calls] joinAgoraChannel: في انتظار عملية Join سابقة تخلص أولاً');
+    try{ await state._joinLock; }catch(_){}
+    if(state.callPhase==='connected' && state._joinedChannel===channel) return;
+  }
+  let releaseLock;
+  state._joinLock = new Promise(res=>{ releaseLock = res; });
+  state.callPhase = 'connecting';
+  _logStep('joinAgoraChannel', 'BEGIN', {channel});
   try{
     // تنظيف احترازي: لو فيه أي جلسة Agora قديمة عالقة (نادر جدًا)، اقفلها الأول
     // قبل ما تبدأ الجلسة الجديدة، عشان الصوت/الاتصال القديم مايتلخبطش مع الجديد.
-    if(state.agoraClient){ try{ await state.agoraClient.leave(); }catch(_){} state.agoraClient=null; }
+    // ودايمًا Client واحد بس موجود في state.agoraClient طول المكالمة.
+    if(state.agoraClient){
+      _logStep('client.leave (تنظيف احترازي)', 'BEFORE', {channel});
+      try{ await state.agoraClient.leave(); _logStep('client.leave (تنظيف احترازي)', 'AFTER (success)', {channel}); }
+      catch(e){ console.error('[calls] leave (تنظيف احترازي) فشل:', e); _logError('client.leave (تنظيف احترازي)', e); }
+      state.agoraClient=null;
+    }
     if(state.localAudioTrack){ try{ state.localAudioTrack.close(); }catch(_){} state.localAudioTrack=null; }
+
     const numericUid = hashUidToNumber(state.user.uid);
     const agoraToken = await fetchAgoraToken(channel, numericUid);
-    state.agoraClient = AgoraRTC.createClient({mode:'rtc', codec:'vp8'});
+
+    let client;
+    _logStep('createClient', 'BEFORE', {channel});
+    try{
+      client = AgoraRTC.createClient({mode:'rtc', codec:'vp8'});
+      _logStep('createClient', 'AFTER (success)', {channel});
+    }catch(e){ console.error('[calls] createClient فشل:', e); _logError('createClient', e); throw e; }
+    state.agoraClient = client;
     setCallConnDot('reconnecting'); // جارِ الاتصال
     // مؤشر حالة الاتصال + إعادة الاتصال التلقائية: الـ SDK نفسه بيحاول يعيد الاتصال
     // عند انقطاع الشبكة، إحنا هنا بس بنعكس الحالة دي للمستخدم بشكل واضح.
-    state.agoraClient.on('connection-state-change', (curState, prevState, reason)=>{
+    // (Listener بيتسجل مرة واحدة بس هنا، لأن client دايمًا نسخة جديدة عند إعادة الإنشاء)
+    client.on('connection-state-change', (curState, prevState, reason)=>{
       const statusEl = $('#callStatusText');
       if(curState==='CONNECTED'){ setCallConnDot('good'); if(statusEl && $('#callTimerText').style.display!=='none') statusEl.textContent=''; }
       else if(curState==='RECONNECTING'){ setCallConnDot('reconnecting'); if(statusEl) statusEl.textContent='جارِ إعادة الاتصال...'; }
       else if(curState==='DISCONNECTED' && reason!=='LEAVE'){ setCallConnDot('bad'); if(statusEl) statusEl.textContent='انقطع الاتصال'; }
     });
-    // مهم: لازم نسجّل مستمع 'user-published' قبل الـ join مباشرة (زي معمل
-    // المكالمات المستقل تمامًا) — لو اتسجل بعد الـ join والـ publish زي ما كان
-    // قبل كده، ممكن نفوّت حدث نشر صوت الطرف التاني لو حصل في الفاصل الزمني
-    // الصغير ده، فيبقى الاتصال شغال بس من غير ما نسمع بعض. تسجيله الأول
-    // بيضمن إننا نمسك أي نشر صوت من الطرف التاني من أول لحظة.
-    state.agoraClient.on('user-published', async (user, mediaType)=>{
-      await state.agoraClient.subscribe(user, mediaType);
-      if(mediaType==='audio') user.audioTrack.play();
-    });
-    await state.agoraClient.join(AGORA_APP_ID, channel, agoraToken, numericUid);
+
+    _logStep('client.join', 'BEFORE', {channel, uid: numericUid, tokenLength: agoraToken ? agoraToken.length : 0});
+    try{
+      await client.join(AGORA_APP_ID, channel, agoraToken, numericUid);
+      _logStep('client.join', 'AFTER (success)', {channel, uid: numericUid});
+    }catch(e){ console.error('[calls] client.join فشل:', e); _logError('client.join', e); throw e; }
+
     // تحسين جودة الصوت: إلغاء الصدى + تقليل الضوضاء + تحكم تلقائي في مستوى الصوت
-    state.localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack({
-      AEC: true, ANS: true, AGC: true, encoderConfig: 'music_standard'
+    // (Microphone Track واحد بس بيتخلق هنا لكل جلسة Join)
+    _logStep('createMicrophoneAudioTrack', 'BEFORE', {channel});
+    try{
+      state.localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack({
+        AEC: true, ANS: true, AGC: true, encoderConfig: 'music_standard'
+      });
+      _logStep('createMicrophoneAudioTrack', 'AFTER (success)', {channel});
+    }catch(e){ console.error('[calls] createMicrophoneAudioTrack فشل:', e); _logError('createMicrophoneAudioTrack', e); throw e; }
+
+    _logStep('client.publish', 'BEFORE', {channel});
+    try{
+      await client.publish([state.localAudioTrack]);
+      _logStep('client.publish', 'AFTER (success)', {channel});
+    }catch(e){ console.error('[calls] publish فشل:', e); _logError('client.publish', e); throw e; }
+
+    client.on('user-published', async (user, mediaType)=>{
+      _logStep('client.subscribe', 'BEFORE', {channel, remoteUid: user && user.uid, mediaType});
+      try{
+        await client.subscribe(user, mediaType);
+        _logStep('client.subscribe', 'AFTER (success)', {channel, remoteUid: user && user.uid, mediaType});
+        if(mediaType==='audio') user.audioTrack.play();
+      }catch(e){ console.error('[calls] subscribe فشل:', e); _logError('client.subscribe', e); }
     });
-    await state.agoraClient.publish([state.localAudioTrack]);
+
+    state._joinedChannel = channel;
+    state.callPhase = 'connected';
     setCallConnDot('good');
     $('#callStatusText').style.display='none';
     $('#callTimerText').style.display='block';
     state.callSeconds = 0;
+    // حماية إضافية: نتأكد إن مفيش Interval قديم شغال قبل ما نبدأ واحد جديد
+    if(state.callTimerInt){ clearInterval(state.callTimerInt); }
     state.callTimerInt = setInterval(()=>{ state.callSeconds++; const el=$('#callTimerText'); if(el) el.textContent=fmtDuration(state.callSeconds); }, 1000);
+    _logStep('joinAgoraChannel', 'END (success)', {channel});
   }catch(e){
-    console.error(e);
+    console.error('[calls] joinAgoraChannel فشل:', e);
+    _logError('joinAgoraChannel', e);
+    state.callPhase = 'ringing';
     setCallConnDot('bad');
     const statusEl = $('#callStatusText');
     if(statusEl){
@@ -4158,6 +4281,10 @@ async function joinAgoraChannel(channel){
       $('#btnRetryJoin')?.addEventListener('click', ()=> joinAgoraChannel(channel));
     }
     toast('تعذر الدخول على المكالمة — تأكد إن سيرفر التوكن شغال وإن App Certificate مفعّل من Agora Console');
+  } finally {
+    _logStep('joinAgoraChannel', 'FINALLY', {channel});
+    releaseLock();
+    state._joinLock = null;
   }
 }
 function setCallConnDot(state_){
@@ -4165,21 +4292,48 @@ function setCallConnDot(state_){
   if(dot) dot.className = 'call-conn-dot ' + state_;
 }
 async function endCallUI(callId){
-  hideIncomingBanner();
-  $('#callOverlay').classList.remove('active');
-  clearInterval(state.callTimerInt); state.callTimerInt=null;
-  if(state.localAudioTrack){ state.localAudioTrack.close(); state.localAudioTrack=null; }
-  if(state.agoraClient){ try{ await state.agoraClient.leave(); }catch(e){} state.agoraClient=null; }
-  if(state._callPeerMutedWatcher){ state._callPeerMutedWatcher.ref.off('value', state._callPeerMutedWatcher.cb); state._callPeerMutedWatcher=null; }
-  try{ db.ref(`calls/${callId}/muted/${state.user.uid}`).remove(); }catch(_){}
-  // كان قبل كده: db.ref('calls/'+callId).off() بدون تحديد — وده يشيل *كل*
-  // المستمعين على المسار ده، بما فيهم مستمع "المكالمات الواردة" الدائم.
-  // دلوقتي بنشيل فقط مستمع الجلسة المؤقتة اللي عملها startCall (لو موجود لنفس الـ callId).
-  if(state._activeCallSessionWatcher && state._activeCallSessionWatcher.callId===callId){
-    state._activeCallSessionWatcher.ref.off('value', state._activeCallSessionWatcher.cb);
-    state._activeCallSessionWatcher = null;
+  // حماية من التنفيذ المتكرر/المتزامن: لو endCallUI اتنادت أكتر من مرة لنفس
+  // المكالمة (مثلاً دوس زرار "إنهاء" محليًا + وصول تحديث status='ended' من
+  // Firebase في نفس اللحظة)، منسيبش leave()/cleanup تتنفذ مرتين في نفس الوقت.
+  if(state._endingCallId===callId){
+    console.warn('[calls] endCallUI: تجاهل — إنهاء المكالمة جاري بالفعل', callId);
+    return;
   }
-  state.currentCallId = null;
+  state._endingCallId = callId;
+  state.callPhase = 'ending';
+  _logStep('endCallUI', 'BEGIN', {callId});
+  try{
+    hideIncomingBanner();
+    $('#callOverlay').classList.remove('active');
+    clearInterval(state.callTimerInt); state.callTimerInt=null;
+    if(state.localAudioTrack){
+      try{ state.localAudioTrack.close(); }catch(e){ console.error('[calls] إغلاق localAudioTrack فشل:', e); _logError('localAudioTrack.close', e); }
+      state.localAudioTrack=null;
+    }
+    if(state.agoraClient){
+      // client.leave() بتتنفذ مرة واحدة بس هنا، والـ Client بيتشال فورًا بعدها
+      // عشان أي استدعاء تاني (لو حصل) يلاقي state.agoraClient=null ومايكررش leave.
+      _logStep('client.leave', 'BEFORE', {callId});
+      try{ await state.agoraClient.leave(); _logStep('client.leave', 'AFTER (success)', {callId}); }
+      catch(e){ console.error('[calls] client.leave فشل:', e); _logError('client.leave', e); }
+      state.agoraClient=null;
+    }
+    if(state._callPeerMutedWatcher){ state._callPeerMutedWatcher.ref.off('value', state._callPeerMutedWatcher.cb); state._callPeerMutedWatcher=null; }
+    try{ db.ref(`calls/${callId}/muted/${state.user.uid}`).remove(); }catch(_){}
+    // كان قبل كده: db.ref('calls/'+callId).off() بدون تحديد — وده يشيل *كل*
+    // المستمعين على المسار ده، بما فيهم مستمع "المكالمات الواردة" الدائم.
+    // دلوقتي بنشيل فقط مستمع الجلسة المؤقتة اللي عملها startCall (لو موجود لنفس الـ callId).
+    if(state._activeCallSessionWatcher && state._activeCallSessionWatcher.callId===callId){
+      state._activeCallSessionWatcher.ref.off('value', state._activeCallSessionWatcher.cb);
+      state._activeCallSessionWatcher = null;
+    }
+  } finally {
+    state.currentCallId = null;
+    state._joinedChannel = null;
+    state.callPhase = 'idle';
+    if(state._endingCallId===callId) state._endingCallId = null;
+    _logStep('endCallUI', 'END', {callId});
+  }
 }
 
 /* =====[ SECTION: BOOTSTRAP ]===== */
